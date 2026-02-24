@@ -106,6 +106,8 @@ class EvidencePipeline:
         pmids_images = sum(s.get("pmids_images", 0) for s in debug_stats)
         posts_with_images = sum(1 for s in debug_stats if s.get("image_urls", 0) > 0)
         pmids_fetch_failed = sum(s.get("pmids_fetch_failed", 0) for s in debug_stats)
+        images_fetched = sum(s.get("images_fetched", 0) for s in debug_stats)
+        images_failed = sum(s.get("images_failed", 0) for s in debug_stats)
         return PipelineRunResult(
             items=results,
             posts_fetched=len(posts),
@@ -114,6 +116,8 @@ class EvidencePipeline:
             debug_pmids_from_text=pmids_text,
             debug_pmids_from_images=pmids_images,
             debug_pmids_fetch_failed=pmids_fetch_failed,
+            debug_images_fetched=images_fetched,
+            debug_images_failed=images_failed,
         )
 
     def _process_post(
@@ -132,6 +136,7 @@ class EvidencePipeline:
         image_urls = self._extract_post_image_urls(post=post)
         pmids_from_images: list[str] = []
         image_title_candidates: list[str] = []
+        img_debug: dict[str, int] = {}
         if debug_stats is not None:
             debug_stats.append(
                 {
@@ -145,10 +150,13 @@ class EvidencePipeline:
                 self._extract_pmids_and_titles_from_images(
                     image_urls=image_urls,
                     topic=topic,
+                    debug_counts=img_debug if debug_stats else None,
                 )
             )
             if debug_stats:
                 debug_stats[-1]["pmids_images"] = len(pmids_from_images)
+                debug_stats[-1]["images_fetched"] = img_debug.get("images_fetched", 0)
+                debug_stats[-1]["images_failed"] = img_debug.get("images_failed", 0)
 
         pmids = sorted(set(pmids_from_text + pmids_from_images))
         if not pmids:
@@ -334,6 +342,7 @@ class EvidencePipeline:
         self,
         image_urls: list[str],
         topic: str = "",
+        debug_counts: dict[str, int] | None = None,
     ) -> tuple[list[str], list[str]]:
         """One Vision call per image: extract PMIDs and/or title."""
         if not self._openai_api_key or not image_urls:
@@ -345,6 +354,8 @@ class EvidencePipeline:
         }
         pmids: set[str] = set()
         titles: list[str] = []
+        images_fetched = 0
+        images_failed = 0
 
         topic_hint = (
             f" Тема: «{topic}». "
@@ -434,6 +445,10 @@ class EvidencePipeline:
                     json.JSONDecodeError,
                 ):
                     continue
+
+        if debug_counts is not None:
+            debug_counts["images_fetched"] = images_fetched
+            debug_counts["images_failed"] = images_failed
 
         return sorted(pmids), titles[:8]
 

@@ -192,6 +192,15 @@ def main() -> None:
                 f"PMID из текста: {run_result.debug_pmids_from_text}, "
                 f"PMID из картинок: {run_result.debug_pmids_from_images}"
             )
+            st.write(
+                f"Картинок загружено: {run_result.debug_images_fetched}, "
+                f"не удалось загрузить: {run_result.debug_images_failed}"
+            )
+            if run_result.debug_images_failed > 0 and run_result.debug_images_fetched == 0:
+                st.warning(
+                    "Все картинки не удалось загрузить (возможно, блокировка CDN Instagram). "
+                    "Добавлен User-Agent браузера для обхода."
+                )
             if run_result.debug_pmids_fetch_failed > 0:
                 st.warning(
                     f"Загрузка из PubMed не удалась для {run_result.debug_pmids_fetch_failed} "
