@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-APP_VERSION = "1.6"
+APP_VERSION = "1.7"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
