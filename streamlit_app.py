@@ -165,7 +165,7 @@ def main() -> None:
         with st.status("Обработка…", expanded=True) as status:
             st.write("**1. Поиск постов и извлечение исследований**")
             try:
-                results = pipeline.run(
+                run_result = pipeline.run(
                     topic=topic.strip(),
                     sources=sources,
                     max_items=max_items,
@@ -175,11 +175,30 @@ def main() -> None:
                 st.exception(exc)
                 return
 
-            st.write(f"✓ Найдено записей: {len(results)}")
+            st.write(
+                f"Получено постов: {run_result.posts_fetched}, "
+                f"с подписями: {run_result.posts_with_caption}"
+            )
+            st.write(f"✓ Найдено записей: {len(run_result.items)}")
 
+            results = run_result.items
             if not results:
                 status.update(label="Готово", state="complete")
-                st.info("Релевантных постов с исследованиями не найдено.")
+                if run_result.posts_with_caption == 0 and run_result.posts_fetched > 0:
+                    st.info(
+                        f"Apify вернул {run_result.posts_fetched} постов, "
+                        "но ни у одного нет подписи. Проверьте имя аккаунта."
+                    )
+                elif run_result.posts_fetched == 0:
+                    st.info(
+                        "Постов не получено. Проверьте имя аккаунта и APIFY_TOKEN."
+                    )
+                else:
+                    st.info(
+                        "Релевантных постов с исследованиями не найдено. "
+                        "Возможно, фильтр релевантности слишком строгий или "
+                        "PMID не обнаружен в постах."
+                    )
                 return
 
             appended_rows = 0

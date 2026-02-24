@@ -20,3 +20,11 @@ class PostEvidence(BaseModel):
     published_at: str | None = None
     likes: int | None = None
     comments: int | None = None
+
+
+class PipelineRunResult(BaseModel):
+    """Results + stats for pipeline run."""
+
+    items: list[PostEvidence] = Field(default_factory=list)
+    posts_fetched: int = 0
+    posts_with_caption: int = 0

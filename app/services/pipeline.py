@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
-from app.models import PostEvidence
+from app.models import PipelineRunResult, PostEvidence
 from app.services.apify_service import ApifyInstagramClient
 from app.services.pubmed_service import PubMedClient
 from app.services.relevance_service import StudyRelevanceChecker
@@ -35,7 +35,7 @@ class EvidencePipeline:
         sources: list[str],
         max_items: int,
         discovery_limit: int,
-    ) -> list[PostEvidence]:
+    ) -> PipelineRunResult:
         selected_sources = sources
         if not selected_sources:
             selected_sources = self._instagram_client.discover_sources(
@@ -43,24 +43,39 @@ class EvidencePipeline:
                 discovery_limit=discovery_limit,
             )
         if not selected_sources:
-            return []
+            return PipelineRunResult(
+                items=[],
+                posts_fetched=0,
+                posts_with_caption=0,
+            )
 
         posts = self._instagram_client.fetch_posts(
             sources=selected_sources,
             max_items=max_items,
         )
 
-        posts_with_caption = [
-            p for p in posts
-            if isinstance(p, dict) and (p.get("caption") or "").strip()
-        ]
-        workers = min(POST_PROCESS_WORKERS, len(posts_with_caption) or 1)
+        def _has_content(post: dict) -> bool:
+            if not isinstance(post, dict):
+                return False
+            if (post.get("caption") or "").strip():
+                return True
+            if post.get("displayUrl") or post.get("images"):
+                return True
+            for child in post.get("childPosts") or []:
+                if isinstance(child, dict) and (
+                    child.get("displayUrl") or child.get("images")
+                ):
+                    return True
+            return False
+
+        posts_to_process = [p for p in posts if _has_content(p)]
+        workers = min(POST_PROCESS_WORKERS, len(posts_to_process) or 1)
 
         results: list[PostEvidence] = []
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(self._process_post, post, topic): post
-                for post in posts_with_caption
+                for post in posts_to_process
             }
             for future in as_completed(futures):
                 try:
@@ -72,13 +87,18 @@ class EvidencePipeline:
                         "post_processing_failed: %s", e, exc_info=True
                     )
 
-        return results
+        posts_with_caption_count = sum(
+            1 for p in posts if isinstance(p, dict) and (p.get("caption") or "").strip()
+        )
+        return PipelineRunResult(
+            items=results,
+            posts_fetched=len(posts),
+            posts_with_caption=posts_with_caption_count,
+        )
 
     def _process_post(self, post: dict, topic: str) -> PostEvidence | None:
         post_url = post.get("url") or "<no-url>"
         caption = (post.get("caption") or "").strip()
-        if not caption:
-            return None
 
         post_text = self._extract_post_text(post=post, caption=caption)
         pmids = self._pubmed_client.extract_pmids(post_text)
@@ -91,6 +111,7 @@ class EvidencePipeline:
             pmids, image_title_candidates = (
                 self._extract_pmids_and_titles_from_images(
                     image_urls=image_urls,
+                    topic=topic,
                 )
             )
             extraction_source = "image"
@@ -256,6 +277,7 @@ class EvidencePipeline:
     def _extract_pmids_and_titles_from_images(
         self,
         image_urls: list[str],
+        topic: str = "",
     ) -> tuple[list[str], list[str]]:
         """One Vision call per image: extract PMIDs and/or title."""
         if not self._openai_api_key or not image_urls:
@@ -267,6 +289,14 @@ class EvidencePipeline:
         }
         pmids: set[str] = set()
         titles: list[str] = []
+
+        topic_hint = (
+            f" Тема запроса: «{topic}». "
+            "Если видишь эту тему на изображении (в названии статьи, абстракте) "
+            "— обязательно извлеки PMID и title, это сигнал проверить в PubMed."
+            if topic.strip()
+            else ""
+        )
 
         with httpx.Client(timeout=25.0) as client:
             for image_url in image_urls:
@@ -285,7 +315,9 @@ class EvidencePipeline:
                             "content": (
                                 "Если на изображении скриншот PubMed, верни JSON: "
                                 "{\"pmids\": [\"12345678\"], \"title\": \"Full study title\"}. "
-                                "Извлеки PMID если виден, и точное название статьи. "
+                                "Извлеки PMID если виден, и точное название статьи."
+                                + topic_hint
+                                + " "
                                 "Если не скриншот PubMed — {\"pmids\": [], \"title\": \"\"}."
                             ),
                         },
@@ -326,7 +358,7 @@ class EvidencePipeline:
                         if not isinstance(title, str) or not title.strip():
                             continue
                         t = re.sub(r"\s+", " ", title.strip()).rstrip(".")
-                        if 20 <= len(t) <= 250 and t not in titles:
+                        if 15 <= len(t) <= 350 and t not in titles:
                             titles.append(t)
                 except (
                     httpx.HTTPError,
@@ -336,17 +368,17 @@ class EvidencePipeline:
                 ):
                     continue
 
-        return sorted(pmids), titles[:5]
+        return sorted(pmids), titles[:8]
 
     @staticmethod
     def _extract_title_candidates(post_text: str, caption: str) -> list[str]:
         candidates: list[str] = []
 
         lines = [line.strip() for line in post_text.splitlines() if line.strip()]
-        for line in lines[:8]:
-            if len(line) < 20:
+        for line in lines[:12]:
+            if len(line) < 15:
                 continue
-            if len(line) > 220:
+            if len(line) > 300:
                 continue
             if "http" in line.lower():
                 continue
@@ -356,14 +388,14 @@ class EvidencePipeline:
 
         if not candidates:
             first_sentence = re.split(r"[.!?]\s+", caption.strip())[0].strip()
-            if 20 <= len(first_sentence) <= 220:
+            if 15 <= len(first_sentence) <= 300:
                 candidates.append(first_sentence.rstrip("."))
 
         unique: list[str] = []
         for value in candidates:
             if value not in unique:
                 unique.append(value)
-        return unique[:5]
+        return unique[:8]
 
     def _search_pmids_by_titles(self, title_candidates: list[str]) -> list[str]:
         pmids: list[str] = []
@@ -371,7 +403,7 @@ class EvidencePipeline:
             try:
                 matched = self._pubmed_client.search_pmids_by_title(
                     title=candidate,
-                    max_results=3,
+                    max_results=5,
                 )
             except httpx.HTTPError:
                 continue

@@ -17,6 +17,10 @@ PMID_CONTEXT_PATTERN = re.compile(
     r"(?:pmid|pubmed)[^\d]{0,20}(\d{5,8})",
     re.IGNORECASE,
 )
+PMID_STUDY_REF_PATTERN = re.compile(
+    r"(?:study|article|paper|ref\.?|reference)[^\d]{0,15}(\d{5,8})\b",
+    re.IGNORECASE,
+)
 
 
 class PubMedClient:
@@ -30,6 +34,7 @@ class PubMedClient:
         pmids.update(PUBMED_URL_PATTERN.findall(text))
         pmids.update(PUBMED_LEGACY_URL_PATTERN.findall(text))
         pmids.update(PMID_CONTEXT_PATTERN.findall(text))
+        pmids.update(PMID_STUDY_REF_PATTERN.findall(text))
         return sorted(pmids)
 
     def fetch_study(self, pmid: str) -> ResearchItem:

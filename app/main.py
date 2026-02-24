@@ -75,16 +75,22 @@ def main() -> None:
     )
     sources = args.sources or DEFAULT_SOURCES
 
-    results = pipeline.run(
+    run_result = pipeline.run(
         topic=topic,
         sources=sources,
         max_items=args.max_items,
         discovery_limit=args.discovery_limit,
     )
 
+    results = run_result.items
+    print(
+        f"Posts: fetched={run_result.posts_fetched}, "
+        f"with_caption={run_result.posts_with_caption}, found={len(results)}"
+    )
+
     output_path = Path(args.out_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = [result.model_dump(mode="json") for result in results]
+    payload = [r.model_dump(mode="json") for r in results]
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
     _export_to_sheets_if_configured(items=results)
 
