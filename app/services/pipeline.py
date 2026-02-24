@@ -353,7 +353,7 @@ class EvidencePipeline:
         for value in candidates:
             if value not in unique:
                 unique.append(value)
-        return unique[:3]
+        return unique[:5]
 
     def _search_pmids_by_titles(self, title_candidates: list[str]) -> list[str]:
         pmids: list[str] = []

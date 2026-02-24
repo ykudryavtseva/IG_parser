@@ -119,16 +119,32 @@ def main() -> None:
         help="Вопрос или ключевые слова для поиска",
     )
 
+    search_full_profile = st.checkbox(
+        "Искать по всей странице (до 500 постов)",
+        value=True,
+        help="Иначе — только последние N постов. По умолчанию включено.",
+    )
+
     col1, col2, col3 = st.columns(3)
     with col1:
-        max_items = st.number_input("Макс. постов", min_value=5, max_value=200, value=30)
+        max_items_input = st.number_input(
+            "Макс. постов (если не «вся страница»)",
+            min_value=20,
+            max_value=500,
+            value=100,
+            disabled=search_full_profile,
+        )
     with col2:
-        discovery_limit = st.number_input("Лимит источников", min_value=1, max_value=20, value=5)
+        discovery_limit = st.number_input(
+            "Лимит источников", min_value=1, max_value=20, value=5
+        )
     with col3:
         sources_input = st.text_input(
             "Источники (через запятую, default: dangarnernutrition)",
             placeholder="dangarnernutrition",
         )
+
+    max_items = 500 if search_full_profile else max_items_input
 
     if st.button("Запустить", type="primary", use_container_width=True):
         if not topic or not topic.strip():

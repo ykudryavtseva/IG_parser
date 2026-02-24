@@ -76,6 +76,18 @@ TOPIC_SIGNAL_MAP: dict[str, tuple[str, ...]] = {
         "cognitive decline",
         "neurodegenerative",
     ),
+    "testosterone": (
+        "testosterone",
+        "androgen",
+        "bioavailable testosterone",
+        "androgen receptor",
+    ),
+    "тестостерон": (
+        "testosterone",
+        "androgen",
+        "bioavailable testosterone",
+        "androgen receptor",
+    ),
 }
 
 VITAMIN_D_SIGNALS = (
@@ -211,6 +223,10 @@ class StudyRelevanceChecker:
             matched_groups.append(OMEGA_3_SIGNALS)
         if re.search(r"деменц\w*|dementia|alzheimer", topic_low):
             matched_groups.append(DEMENTIA_SIGNALS)
+        if re.search(r"тестостерон|testosterone|androgen", topic_low):
+            matched_groups.append(
+                ("testosterone", "androgen", "bioavailable testosterone")
+            )
 
         if not matched_groups:
             return True
