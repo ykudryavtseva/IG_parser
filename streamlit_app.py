@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-APP_VERSION = "1.4"
+APP_VERSION = "1.5"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
@@ -126,6 +126,11 @@ def main() -> None:
         value=True,
         help="Иначе — только последние N постов. По умолчанию включено.",
     )
+    skip_relevance = st.checkbox(
+        "Пропустить фильтр релевантности (отладка)",
+        value=False,
+        help="Показывать все найденные исследования без проверки на тему.",
+    )
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -172,6 +177,7 @@ def main() -> None:
                     sources=sources,
                     max_items=max_items,
                     discovery_limit=discovery_limit,
+                    skip_relevance=skip_relevance,
                 )
             except Exception as exc:
                 st.exception(exc)
@@ -180,6 +186,11 @@ def main() -> None:
             st.write(
                 f"Получено постов: {run_result.posts_fetched}, "
                 f"с подписями: {run_result.posts_with_caption}"
+            )
+            st.write(
+                f"Постов с картинками: {run_result.debug_posts_with_images}, "
+                f"PMID из текста: {run_result.debug_pmids_from_text}, "
+                f"PMID из картинок: {run_result.debug_pmids_from_images}"
             )
             st.write(f"✓ Найдено записей: {len(run_result.items)}")
 
@@ -200,6 +211,11 @@ def main() -> None:
                         "Релевантных постов с исследованиями не найдено. "
                         "Возможно, фильтр релевантности слишком строгий или "
                         "PMID не обнаружен в постах."
+                    )
+                    st.markdown(
+                        "**Отладка:** попробуйте включить "
+                        "«Пропустить фильтр релевантности» — если появятся "
+                        "результаты, проблема в фильтре."
                     )
                 return
 

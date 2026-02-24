@@ -35,6 +35,7 @@ class EvidencePipeline:
         sources: list[str],
         max_items: int,
         discovery_limit: int,
+        skip_relevance: bool = False,
     ) -> PipelineRunResult:
         selected_sources = sources
         if not selected_sources:
@@ -75,10 +76,17 @@ class EvidencePipeline:
         posts_to_process = [p for p in posts if _has_content(p)]
         workers = min(POST_PROCESS_WORKERS, len(posts_to_process) or 1)
 
+        debug_stats: list[dict] = []
         results: list[PostEvidence] = []
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(self._process_post, post, topic): post
+                executor.submit(
+                    self._process_post,
+                    post,
+                    topic,
+                    skip_relevance=skip_relevance,
+                    debug_stats=debug_stats,
+                ): post
                 for post in posts_to_process
             }
             for future in as_completed(futures):
@@ -94,13 +102,25 @@ class EvidencePipeline:
         posts_with_caption_count = sum(
             1 for p in posts if isinstance(p, dict) and (p.get("caption") or "").strip()
         )
+        pmids_text = sum(s.get("pmids_text", 0) for s in debug_stats)
+        pmids_images = sum(s.get("pmids_images", 0) for s in debug_stats)
+        posts_with_images = sum(1 for s in debug_stats if s.get("image_urls", 0) > 0)
         return PipelineRunResult(
             items=results,
             posts_fetched=len(posts),
             posts_with_caption=posts_with_caption_count,
+            debug_posts_with_images=posts_with_images,
+            debug_pmids_from_text=pmids_text,
+            debug_pmids_from_images=pmids_images,
         )
 
-    def _process_post(self, post: dict, topic: str) -> PostEvidence | None:
+    def _process_post(
+        self,
+        post: dict,
+        topic: str,
+        skip_relevance: bool = False,
+        debug_stats: list[dict] | None = None,
+    ) -> PostEvidence | None:
         post_url = post.get("url") or "<no-url>"
         caption = (post.get("caption") or "").strip()
 
@@ -110,6 +130,14 @@ class EvidencePipeline:
         image_urls = self._extract_post_image_urls(post=post)
         pmids_from_images: list[str] = []
         image_title_candidates: list[str] = []
+        if debug_stats is not None:
+            debug_stats.append(
+                {
+                    "pmids_text": len(pmids_from_text),
+                    "image_urls": len(image_urls),
+                    "pmids_images": 0,
+                }
+            )
         if image_urls:
             pmids_from_images, image_title_candidates = (
                 self._extract_pmids_and_titles_from_images(
@@ -117,6 +145,8 @@ class EvidencePipeline:
                     topic=topic,
                 )
             )
+            if debug_stats:
+                debug_stats[-1]["pmids_images"] = len(pmids_from_images)
 
         pmids = sorted(set(pmids_from_text + pmids_from_images))
         if not pmids:
@@ -145,6 +175,9 @@ class EvidencePipeline:
             except (httpx.HTTPError, KeyError, ValueError):
                 continue
             if pmid in pmids_from_images_set:
+                studies.append(study)
+                continue
+            if skip_relevance:
                 studies.append(study)
                 continue
             if not self._relevance_checker.is_relevant(

@@ -28,3 +28,6 @@ class PipelineRunResult(BaseModel):
     items: list[PostEvidence] = Field(default_factory=list)
     posts_fetched: int = 0
     posts_with_caption: int = 0
+    debug_posts_with_images: int = 0
+    debug_pmids_from_text: int = 0
+    debug_pmids_from_images: int = 0
