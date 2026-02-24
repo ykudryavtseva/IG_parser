@@ -59,11 +59,15 @@ class EvidencePipeline:
                 return False
             if (post.get("caption") or "").strip():
                 return True
-            if post.get("displayUrl") or post.get("images"):
+            if any(
+                post.get(k)
+                for k in ("displayUrl", "imageUrl", "image", "mediaUrl", "images")
+            ):
                 return True
             for child in post.get("childPosts") or []:
-                if isinstance(child, dict) and (
-                    child.get("displayUrl") or child.get("images")
+                if isinstance(child, dict) and any(
+                    child.get(k)
+                    for k in ("displayUrl", "imageUrl", "image", "images")
                 ):
                     return True
             return False
@@ -127,17 +131,29 @@ class EvidencePipeline:
         if not pmids:
             return None
 
+        pmids_from_images_set = set(pmids_from_images)
+        topic_words = [
+            w.lower()
+            for w in re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9-]+", topic)
+            if len(w) >= 4
+        ]
+
         studies = []
         for pmid in pmids:
             try:
                 study = self._pubmed_client.fetch_study(pmid)
             except (httpx.HTTPError, KeyError, ValueError):
                 continue
+            if pmid in pmids_from_images_set:
+                studies.append(study)
+                continue
             if not self._relevance_checker.is_relevant(
                 topic=topic,
                 study_title=study.title,
             ):
-                continue
+                title_low = study.title.lower()
+                if not any(w in title_low for w in topic_words):
+                    continue
             studies.append(study)
 
         if not studies:
@@ -214,9 +230,10 @@ class EvidencePipeline:
     def _extract_post_image_urls(post: dict) -> list[str]:
         image_urls: list[str] = []
 
-        primary = post.get("displayUrl")
-        if isinstance(primary, str) and primary.startswith("http"):
-            image_urls.append(primary)
+        for key in ("displayUrl", "imageUrl", "image", "mediaUrl", "thumbnailUrl"):
+            primary = post.get(key)
+            if isinstance(primary, str) and primary.startswith("http"):
+                image_urls.append(primary)
 
         images = post.get("images")
         if isinstance(images, list):
@@ -224,7 +241,12 @@ class EvidencePipeline:
                 if isinstance(item, str) and item.startswith("http"):
                     image_urls.append(item)
                 elif isinstance(item, dict):
-                    candidate = item.get("url") or item.get("displayUrl")
+                    candidate = (
+                        item.get("url")
+                        or item.get("displayUrl")
+                        or item.get("imageUrl")
+                        or item.get("image")
+                    )
                     if (
                         isinstance(candidate, str)
                         and candidate.startswith("http")
@@ -236,16 +258,22 @@ class EvidencePipeline:
             for child in child_posts:
                 if not isinstance(child, dict):
                     continue
-                child_display = child.get("displayUrl")
-                if isinstance(child_display, str) and child_display.startswith("http"):
-                    image_urls.append(child_display)
+                for ckey in ("displayUrl", "imageUrl", "image", "url"):
+                    child_media = child.get(ckey)
+                    if isinstance(child_media, str) and child_media.startswith("http"):
+                        image_urls.append(child_media)
+                        break
                 child_images = child.get("images")
                 if isinstance(child_images, list):
                     for image in child_images:
                         if isinstance(image, str) and image.startswith("http"):
                             image_urls.append(image)
                         elif isinstance(image, dict):
-                            candidate = image.get("url") or image.get("displayUrl")
+                            candidate = (
+                                image.get("url")
+                                or image.get("displayUrl")
+                                or image.get("imageUrl")
+                            )
                             if (
                                 isinstance(candidate, str)
                                 and candidate.startswith("http")
