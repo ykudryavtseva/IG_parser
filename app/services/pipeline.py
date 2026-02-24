@@ -10,8 +10,8 @@ from app.services.apify_service import ApifyInstagramClient
 from app.services.pubmed_service import PubMedClient
 from app.services.relevance_service import StudyRelevanceChecker
 
-MAX_IMAGE_URLS_TO_SCAN = 10
-POST_PROCESS_WORKERS = 6
+MAX_IMAGE_URLS_TO_SCAN = 5
+POST_PROCESS_WORKERS = 12
 
 
 class EvidencePipeline:
