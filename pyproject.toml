@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "ig-parser"
+version = "0.1.0"
+description = "Instagram to PubMed evidence extraction MVP"
+authors = ["user <user@example.com>"]
+readme = "README.md"
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+apify-client = "^1.8.1"
+streamlit = "^1.39.0"
+httpx = "^0.28.1"
+pydantic = "^2.11.9"
+python-dotenv = "^1.1.1"
+google-api-python-client = "^2.163.0"
+google-auth = "^2.38.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.2"
+black = "^25.1.0"
+isort = "^6.0.1"
+
+[tool.black]
+line-length = 88
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
