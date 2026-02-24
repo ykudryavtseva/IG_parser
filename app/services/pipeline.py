@@ -136,27 +136,24 @@ class EvidencePipeline:
         image_urls = self._extract_post_image_urls(post=post)
         pmids_from_images: list[str] = []
         image_title_candidates: list[str] = []
-        img_debug: dict[str, int] = {}
+        entry: dict = {}
         if debug_stats is not None:
-            debug_stats.append(
-                {
-                    "pmids_text": len(pmids_from_text),
-                    "image_urls": len(image_urls),
-                    "pmids_images": 0,
-                }
-            )
+            entry = {
+                "pmids_text": len(pmids_from_text),
+                "image_urls": len(image_urls),
+                "pmids_images": 0,
+            }
+            debug_stats.append(entry)
         if image_urls:
             pmids_from_images, image_title_candidates = (
                 self._extract_pmids_and_titles_from_images(
                     image_urls=image_urls,
                     topic=topic,
-                    debug_counts=img_debug if debug_stats else None,
+                    debug_counts=entry if debug_stats else None,
                 )
             )
             if debug_stats:
-                debug_stats[-1]["pmids_images"] = len(pmids_from_images)
-                debug_stats[-1]["images_fetched"] = img_debug.get("images_fetched", 0)
-                debug_stats[-1]["images_failed"] = img_debug.get("images_failed", 0)
+                entry["pmids_images"] = len(pmids_from_images)
 
         pmids = sorted(set(pmids_from_text + pmids_from_images))
         if not pmids:
@@ -377,7 +374,14 @@ class EvidencePipeline:
             "Не скриншот статьи — {\"pmids\": [], \"title\": \"\"}."
         )
 
-        with httpx.Client(timeout=25.0) as client:
+        browser_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        }
+        with httpx.Client(timeout=25.0, headers=browser_headers) as client:
             for image_url in image_urls:
                 data_url = self._build_data_url(
                     client=client,
