@@ -174,6 +174,12 @@ def main() -> None:
 
             status.update(label="Готово", state="complete")
 
+        if has_sheets and appended_rows > 0:
+            spreadsheet_id = _get_secret("GOOGLE_SHEETS_SPREADSHEET_ID")
+            if spreadsheet_id:
+                sheets_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
+                st.markdown(f"📊 **Выгрузка в Google Sheets:** [открыть таблицу]({sheets_url})")
+
         for item in results:
             label = f"📌 {item.author_username or '—'} | {len(item.studies)} исследований"
             with st.expander(label):
