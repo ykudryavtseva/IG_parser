@@ -336,11 +336,23 @@ class EvidencePipeline:
         titles: list[str] = []
 
         topic_hint = (
-            f" Тема запроса: «{topic}». "
-            "Если видишь эту тему на изображении (в названии статьи, абстракте) "
-            "— обязательно извлеки PMID и title, это сигнал проверить в PubMed."
+            f" Тема: «{topic}». "
+            "Если эта тема есть на изображении — извлеки PMID и title."
             if topic.strip()
             else ""
+        )
+
+        system_prompt = (
+            "PubMed — база научных статей (pubmed.ncbi.nlm.nih.gov, NCBI). "
+            "PMID (PubMed ID) — это число из 5-8 цифр, которое идентифицирует статью. "
+            "Оно может быть: в URL (…/12345678/), под надписью PMID или в тексте. "
+            "Скриншот PubMed: страница с абстрактом, названием статьи, авторами, NCBI. "
+            "Найди на изображении ВСЕ числа 5-8 цифр, которые похожи на PMID, "
+            "и точное название статьи (title). "
+            "Верни JSON: {\"pmids\": [\"12345678\", \"87654321\"], \"title\": \"Full article title\"}. "
+            + topic_hint
+            + " "
+            "Если это не скриншот PubMed/NCBI — {\"pmids\": [], \"title\": \"\"}."
         )
 
         with httpx.Client(timeout=25.0) as client:
@@ -357,19 +369,18 @@ class EvidencePipeline:
                     "messages": [
                         {
                             "role": "system",
-                            "content": (
-                                "Если на изображении скриншот PubMed, верни JSON: "
-                                "{\"pmids\": [\"12345678\"], \"title\": \"Full study title\"}. "
-                                "Извлеки PMID если виден, и точное название статьи."
-                                + topic_hint
-                                + " "
-                                "Если не скриншот PubMed — {\"pmids\": [], \"title\": \"\"}."
-                            ),
+                            "content": system_prompt,
                         },
                         {
                             "role": "user",
                             "content": [
-                                {"type": "text", "text": "PMID и название статьи."},
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "Извлеки PMID (числа 5-8 цифр из PubMed/NCBI) "
+                                        "и название статьи с этого изображения."
+                                    ),
+                                },
                                 {
                                     "type": "image_url",
                                     "image_url": {"url": data_url},
