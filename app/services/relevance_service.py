@@ -139,14 +139,12 @@ class StudyRelevanceChecker:
             study_title=study_title,
         )
         ai_result = self._check_with_ai(topic=topic, study_title=study_title)
-        if ai_result is None:
-            self._cache[cache_key] = heuristic_result
-            return heuristic_result
 
-        # Prevent false negatives from the AI classifier on borderline titles.
-        decision = ai_result or heuristic_result
-        self._cache[cache_key] = decision
-        return decision
+        if ai_result is not None:
+            self._cache[cache_key] = ai_result
+            return ai_result
+        self._cache[cache_key] = heuristic_result
+        return heuristic_result
 
     def _check_with_ai(self, topic: str, study_title: str) -> bool | None:
         if not self._openai_api_key:
@@ -159,17 +157,21 @@ class StudyRelevanceChecker:
                 {
                     "role": "system",
                     "content": (
-                        "Ты проверяешь релевантность исследования вопросу "
-                        "пользователя. Отвечай JSON: "
-                        "{\"relevant\": true|false}."
+                        "Ты строгий фильтр релевантности. Отвечай JSON: "
+                        "{\"relevant\": true|false}. "
+                        "relevant=true ТОЛЬКО если исследование напрямую и "
+                        "в основном посвящено теме вопроса. "
+                        "Упоминание темы в контексте других вопросов, "
+                        "косвенная связь, tangential reference — relevant=false. "
+                        "Будь консервативен: при сомнении — false."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        f"Вопрос: {topic}\n"
+                        f"Вопрос/тема: {topic}\n"
                         f"Название исследования: {study_title}\n"
-                        "Релевантно ли это исследование вопросу?"
+                        "Это исследование напрямую о теме? Да или нет?"
                     ),
                 },
             ],
