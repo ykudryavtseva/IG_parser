@@ -1,6 +1,7 @@
 import re
 import json
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
@@ -10,6 +11,7 @@ from app.services.pubmed_service import PubMedClient
 from app.services.relevance_service import StudyRelevanceChecker
 
 MAX_IMAGE_URLS_TO_SCAN = 10
+POST_PROCESS_WORKERS = 6
 
 
 class EvidencePipeline:
@@ -48,94 +50,95 @@ class EvidencePipeline:
             max_items=max_items,
         )
 
+        posts_with_caption = [
+            p for p in posts
+            if isinstance(p, dict) and (p.get("caption") or "").strip()
+        ]
+        workers = min(POST_PROCESS_WORKERS, len(posts_with_caption) or 1)
+
         results: list[PostEvidence] = []
-        for post in posts:
-            post_url = post.get("url") or "<no-url>"
-            caption = (post.get("caption") or "").strip()
-            if not caption:
-                print(f"[PIPELINE] skip post={post_url} reason=empty_caption")
-                continue
-
-            post_text = self._extract_post_text(post=post, caption=caption)
-            pmids = self._pubmed_client.extract_pmids(post_text)
-            extraction_source = "text"
-            image_urls: list[str] = []
-            image_title_candidates: list[str] = []
-            title_candidates: list[str] = []
-            if not pmids:
-                image_urls = self._extract_post_image_urls(post=post)
-                pmids = self._extract_pmids_from_images(image_urls=image_urls)
-                extraction_source = "image"
-            if not pmids:
-                image_title_candidates = self._extract_titles_from_images(
-                    image_urls=image_urls,
-                )
-                title_candidates = self._extract_title_candidates(
-                    post_text=post_text,
-                    caption=caption,
-                )
-                for title in image_title_candidates:
-                    if title not in title_candidates:
-                        title_candidates.append(title)
-                pmids = self._search_pmids_by_titles(title_candidates=title_candidates)
-                extraction_source = "title"
-            if not pmids:
-                print(
-                    f"[PIPELINE] skip post={post_url} reason=no_pmids "
-                    f"images={len(image_urls)} image_titles={len(image_title_candidates)} "
-                    f"title_candidates={len(title_candidates)}"
-                )
-                continue
-            print(
-                f"[PIPELINE] post={post_url} pmids={pmids} source={extraction_source}"
-            )
-
-            studies = []
-            for pmid in pmids:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(self._process_post, post, topic): post
+                for post in posts_with_caption
+            }
+            for future in as_completed(futures):
                 try:
-                    study = self._pubmed_client.fetch_study(pmid)
-                except (httpx.HTTPError, KeyError, ValueError):
-                    continue
-                if not self._relevance_checker.is_relevant(
-                    topic=topic,
-                    study_title=study.title,
-                ):
-                    print(
-                        f"[PIPELINE] skip study pmid={pmid} "
-                        f"reason=not_relevant title={study.title}"
-                    )
-                    continue
-                studies.append(study)
-
-            if not studies:
-                print(f"[PIPELINE] skip post={post_url} reason=no_relevant_studies")
-                continue
-
-            tags = self._build_tags(topic=topic, caption=caption)
-            summary = self._build_summary(post=post, caption=caption)
-
-            results.append(
-                PostEvidence(
-                    topic=topic,
-                    summary=summary,
-                    tags=tags,
-                    studies=studies,
-                    post_url=post.get("url"),
-                    author_username=(post.get("owner") or {}).get("username")
-                    or post.get("ownerUsername"),
-                    published_at=(
-                        post.get("createdAt")
-                        or post.get("timestamp")
-                    ),
-                    likes=post.get("likeCount") or post.get("likesCount"),
-                    comments=(
-                        post.get("commentCount")
-                        or post.get("commentsCount")
-                    ),
-                )
-            )
+                    evidence = future.result()
+                    if evidence:
+                        results.append(evidence)
+                except Exception:
+                    pass
 
         return results
+
+    def _process_post(self, post: dict, topic: str) -> PostEvidence | None:
+        post_url = post.get("url") or "<no-url>"
+        caption = (post.get("caption") or "").strip()
+        if not caption:
+            return None
+
+        post_text = self._extract_post_text(post=post, caption=caption)
+        pmids = self._pubmed_client.extract_pmids(post_text)
+        extraction_source = "text"
+        image_urls: list[str] = []
+        image_title_candidates: list[str] = []
+        title_candidates: list[str] = []
+        if not pmids:
+            image_urls = self._extract_post_image_urls(post=post)
+            pmids, image_title_candidates = (
+                self._extract_pmids_and_titles_from_images(
+                    image_urls=image_urls,
+                )
+            )
+            extraction_source = "image"
+        if not pmids:
+            title_candidates = self._extract_title_candidates(
+                post_text=post_text,
+                caption=caption,
+            )
+            for title in image_title_candidates:
+                if title not in title_candidates:
+                    title_candidates.append(title)
+            pmids = self._search_pmids_by_titles(title_candidates=title_candidates)
+            extraction_source = "title"
+        if not pmids:
+            return None
+
+        studies = []
+        for pmid in pmids:
+            try:
+                study = self._pubmed_client.fetch_study(pmid)
+            except (httpx.HTTPError, KeyError, ValueError):
+                continue
+            if not self._relevance_checker.is_relevant(
+                topic=topic,
+                study_title=study.title,
+            ):
+                continue
+            studies.append(study)
+
+        if not studies:
+            return None
+
+        tags = self._build_tags(topic=topic, caption=caption)
+        summary = self._build_summary(post=post, caption=caption)
+        return PostEvidence(
+            topic=topic,
+            summary=summary,
+            tags=tags,
+            studies=studies,
+            post_url=post.get("url"),
+            author_username=(post.get("owner") or {}).get("username")
+            or post.get("ownerUsername"),
+            published_at=(
+                post.get("createdAt") or post.get("timestamp")
+            ),
+            likes=post.get("likeCount") or post.get("likesCount"),
+            comments=(
+                post.get("commentCount") or post.get("commentsCount")
+            ),
+        )
 
     @staticmethod
     def _build_summary(post: dict, caption: str) -> str:
@@ -248,15 +251,20 @@ class EvidencePipeline:
                 unique_urls.append(image_url)
         return unique_urls[:MAX_IMAGE_URLS_TO_SCAN]
 
-    def _extract_pmids_from_images(self, image_urls: list[str]) -> list[str]:
+    def _extract_pmids_and_titles_from_images(
+        self,
+        image_urls: list[str],
+    ) -> tuple[list[str], list[str]]:
+        """One Vision call per image: extract PMIDs and/or title."""
         if not self._openai_api_key or not image_urls:
-            return []
+            return [], []
 
         headers = {
             "Authorization": f"Bearer {self._openai_api_key}",
             "Content-Type": "application/json",
         }
         pmids: set[str] = set()
+        titles: list[str] = []
 
         with httpx.Client(timeout=25.0) as client:
             for image_url in image_urls:
@@ -273,24 +281,16 @@ class EvidencePipeline:
                         {
                             "role": "system",
                             "content": (
-                                "Определи, есть ли на изображении "
-                                "скриншот страницы PubMed. "
-                                "Верни JSON формата: "
-                                "{\"is_pubmed_screenshot\": true|false, "
-                                "\"pmids\": [\"12345678\"]}. "
-                                "Если PMID не виден, верни пустой массив."
+                                "Если на изображении скриншот PubMed, верни JSON: "
+                                "{\"pmids\": [\"12345678\"], \"title\": \"Full study title\"}. "
+                                "Извлеки PMID если виден, и точное название статьи. "
+                                "Если не скриншот PubMed — {\"pmids\": [], \"title\": \"\"}."
                             ),
                         },
                         {
                             "role": "user",
                             "content": [
-                                {
-                                    "type": "text",
-                                    "text": (
-                                        "Извлеки PMID только если он действительно "
-                                        "виден на изображении."
-                                    ),
-                                },
+                                {"type": "text", "text": "PMID и название статьи."},
                                 {
                                     "type": "image_url",
                                     "image_url": {"url": data_url},
@@ -307,17 +307,18 @@ class EvidencePipeline:
                         json=payload,
                     )
                     response.raise_for_status()
-                    content = response.json()["choices"][0][
-                        "message"
-                    ]["content"]
+                    content = response.json()["choices"][0]["message"]["content"]
                     parsed = json.loads(content)
-                    raw_pmids = parsed.get("pmids", [])
-                    if isinstance(raw_pmids, list):
-                        for raw_pmid in raw_pmids:
-                            if isinstance(raw_pmid, str):
-                                match = re.search(r"\b\d{5,8}\b", raw_pmid)
-                                if match:
-                                    pmids.add(match.group(0))
+                    for raw in parsed.get("pmids", []) or []:
+                        if isinstance(raw, str):
+                            m = re.search(r"\b\d{5,8}\b", raw)
+                            if m:
+                                pmids.add(m.group(0))
+                    title = parsed.get("title")
+                    if isinstance(title, str):
+                        t = re.sub(r"\s+", " ", title).strip().rstrip(".")
+                        if 20 <= len(t) <= 250 and t not in titles:
+                            titles.append(t)
                 except (
                     httpx.HTTPError,
                     KeyError,
@@ -326,7 +327,7 @@ class EvidencePipeline:
                 ):
                     continue
 
-        return sorted(pmids)
+        return sorted(pmids), titles[:5]
 
     @staticmethod
     def _extract_title_candidates(post_text: str, caption: str) -> list[str]:
@@ -369,83 +370,6 @@ class EvidencePipeline:
                 if pmid not in pmids:
                     pmids.append(pmid)
         return pmids
-
-    def _extract_titles_from_images(self, image_urls: list[str]) -> list[str]:
-        if not self._openai_api_key or not image_urls:
-            return []
-
-        headers = {
-            "Authorization": f"Bearer {self._openai_api_key}",
-            "Content-Type": "application/json",
-        }
-        titles: list[str] = []
-
-        with httpx.Client(timeout=25.0) as client:
-            for image_url in image_urls:
-                data_url = self._build_data_url(
-                    client=client,
-                    image_url=image_url,
-                )
-                if not data_url:
-                    continue
-                payload = {
-                    "model": self._openai_model,
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "Если на изображении есть скриншот PubMed, "
-                                "выдели точное название исследования. "
-                                "Верни JSON: {\"titles\": [\"...\"]}. "
-                                "Если названия нет, верни пустой массив."
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "Извлеки название статьи с экрана PubMed.",
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": data_url},
-                                },
-                            ],
-                        },
-                    ],
-                    "temperature": 0,
-                }
-                try:
-                    response = client.post(
-                        "https://api.openai.com/v1/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    content = response.json()["choices"][0]["message"]["content"]
-                    parsed = json.loads(content)
-                    extracted_titles = parsed.get("titles", [])
-                    if not isinstance(extracted_titles, list):
-                        continue
-                    for title in extracted_titles:
-                        if not isinstance(title, str):
-                            continue
-                        normalized = re.sub(r"\s+", " ", title).strip().rstrip(".")
-                        if len(normalized) < 20:
-                            continue
-                        if normalized not in titles:
-                            titles.append(normalized)
-                except (
-                    httpx.HTTPError,
-                    KeyError,
-                    ValueError,
-                    json.JSONDecodeError,
-                ):
-                    continue
-
-        return titles[:5]
 
     @staticmethod
     def _build_data_url(client: httpx.Client, image_url: str) -> str | None:
