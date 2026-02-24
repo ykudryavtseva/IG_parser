@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+APP_VERSION = "1.4"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
@@ -108,6 +109,7 @@ def main() -> None:
         layout="wide",
     )
     st.title("🔬 IG Parser — Instagram → PubMed")
+    st.caption(f"Версия {APP_VERSION}")
     st.markdown(
         "Введите тему или вопрос — пайплайн соберёт посты, извлечёт "
         "исследования из PubMed и выгрузит в Google Sheets (если настроено)."
