@@ -101,20 +101,20 @@ class EvidencePipeline:
         caption = (post.get("caption") or "").strip()
 
         post_text = self._extract_post_text(post=post, caption=caption)
-        pmids = self._pubmed_client.extract_pmids(post_text)
-        extraction_source = "text"
-        image_urls: list[str] = []
+        pmids_from_text = self._pubmed_client.extract_pmids(post_text)
+
+        image_urls = self._extract_post_image_urls(post=post)
+        pmids_from_images: list[str] = []
         image_title_candidates: list[str] = []
-        title_candidates: list[str] = []
-        if not pmids:
-            image_urls = self._extract_post_image_urls(post=post)
-            pmids, image_title_candidates = (
+        if image_urls:
+            pmids_from_images, image_title_candidates = (
                 self._extract_pmids_and_titles_from_images(
                     image_urls=image_urls,
                     topic=topic,
                 )
             )
-            extraction_source = "image"
+
+        pmids = sorted(set(pmids_from_text + pmids_from_images))
         if not pmids:
             title_candidates = self._extract_title_candidates(
                 post_text=post_text,
@@ -124,7 +124,6 @@ class EvidencePipeline:
                 if title not in title_candidates:
                     title_candidates.append(title)
             pmids = self._search_pmids_by_titles(title_candidates=title_candidates)
-            extraction_source = "title"
         if not pmids:
             return None
 
@@ -165,26 +164,11 @@ class EvidencePipeline:
 
     @staticmethod
     def _build_summary(post: dict, caption: str) -> str:
-        likes = post.get("likeCount") or post.get("likesCount")
-        comments = post.get("commentCount") or post.get("commentsCount")
-        views = (
-            post.get("videoViewCount")
-            or (post.get("video") or {}).get("playCount")
-            or post.get("videoPlayCount")
-        )
-
-        numbers = []
-        if likes is not None:
-            numbers.append(f"likes={likes}")
-        if comments is not None:
-            numbers.append(f"comments={comments}")
-        if views is not None:
-            numbers.append(f"views={views}")
-        metrics = ", ".join(numbers) if numbers else "metrics unavailable"
-
+        """Short summary for table: what the blogger writes about the research."""
         clean_caption = re.sub(r"\s+", " ", caption).strip()
-        truncated = clean_caption[:1800]
-        return f"Post evidence snapshot ({metrics}). Text: {truncated}"
+        if clean_caption:
+            return clean_caption[:500].rstrip()
+        return "Пост с изображением исследования"
 
     @staticmethod
     def _build_tags(topic: str, caption: str) -> list[str]:
