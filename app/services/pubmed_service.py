@@ -66,7 +66,10 @@ class PubMedClient:
             pmc_response.raise_for_status()
             pmc_data = pmc_response.json()
 
-        result = summary_data["result"][pmid]
+        result = summary_data.get("result", {}).get(pmid)
+        if not isinstance(result, dict) or result.get("error"):
+            err_msg = result.get("error", "not found") if isinstance(result, dict) else ""
+            raise ValueError(f"PMID {pmid} not found in PubMed: {err_msg}")
         authors = [author["name"] for author in result.get("authors", [])]
         year = self._extract_year(result.get("pubdate", ""))
         full_text_url = self._extract_pmc_url(pmc_data)

@@ -192,6 +192,12 @@ def main() -> None:
                 f"PMID из текста: {run_result.debug_pmids_from_text}, "
                 f"PMID из картинок: {run_result.debug_pmids_from_images}"
             )
+            if run_result.debug_pmids_fetch_failed > 0:
+                st.warning(
+                    f"Загрузка из PubMed не удалась для {run_result.debug_pmids_fetch_failed} "
+                    "PMID. Возможно, неверный PMID (ложное срабатывание) или "
+                    "статья не найдена в PubMed."
+                )
             st.write(f"✓ Найдено записей: {len(run_result.items)}")
 
             results = run_result.items

@@ -105,6 +105,7 @@ class EvidencePipeline:
         pmids_text = sum(s.get("pmids_text", 0) for s in debug_stats)
         pmids_images = sum(s.get("pmids_images", 0) for s in debug_stats)
         posts_with_images = sum(1 for s in debug_stats if s.get("image_urls", 0) > 0)
+        pmids_fetch_failed = sum(s.get("pmids_fetch_failed", 0) for s in debug_stats)
         return PipelineRunResult(
             items=results,
             posts_fetched=len(posts),
@@ -112,6 +113,7 @@ class EvidencePipeline:
             debug_posts_with_images=posts_with_images,
             debug_pmids_from_text=pmids_text,
             debug_pmids_from_images=pmids_images,
+            debug_pmids_fetch_failed=pmids_fetch_failed,
         )
 
     def _process_post(
@@ -169,10 +171,15 @@ class EvidencePipeline:
         ]
 
         studies = []
+        fetch_failed = 0
         for pmid in pmids:
             try:
                 study = self._pubmed_client.fetch_study(pmid)
             except (httpx.HTTPError, KeyError, ValueError):
+                fetch_failed += 1
+                logging.getLogger(__name__).info(
+                    "pubmed_fetch_failed pmid=%s", pmid, exc_info=True
+                )
                 continue
             if pmid in pmids_from_images_set:
                 studies.append(study)
@@ -188,6 +195,10 @@ class EvidencePipeline:
                 if not any(w in title_low for w in topic_words):
                     continue
             studies.append(study)
+
+        if debug_stats and pmids:
+            debug_stats[-1]["pmids_attempted"] = len(pmids)
+            debug_stats[-1]["pmids_fetch_failed"] = fetch_failed
 
         if not studies:
             return None

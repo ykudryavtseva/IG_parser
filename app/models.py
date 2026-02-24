@@ -31,3 +31,4 @@ class PipelineRunResult(BaseModel):
     debug_posts_with_images: int = 0
     debug_pmids_from_text: int = 0
     debug_pmids_from_images: int = 0
+    debug_pmids_fetch_failed: int = 0
