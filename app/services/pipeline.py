@@ -1,6 +1,6 @@
-import re
 import json
-import base64
+import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
@@ -67,8 +67,10 @@ class EvidencePipeline:
                     evidence = future.result()
                     if evidence:
                         results.append(evidence)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.getLogger(__name__).warning(
+                        "post_processing_failed: %s", e, exc_info=True
+                    )
 
         return results
 
@@ -309,14 +311,21 @@ class EvidencePipeline:
                     response.raise_for_status()
                     content = response.json()["choices"][0]["message"]["content"]
                     parsed = json.loads(content)
-                    for raw in parsed.get("pmids", []) or []:
-                        if isinstance(raw, str):
-                            m = re.search(r"\b\d{5,8}\b", raw)
-                            if m:
-                                pmids.add(m.group(0))
-                    title = parsed.get("title")
-                    if isinstance(title, str):
-                        t = re.sub(r"\s+", " ", title).strip().rstrip(".")
+                    raw_pmids = parsed.get("pmids")
+                    if isinstance(raw_pmids, list):
+                        for raw in raw_pmids:
+                            if isinstance(raw, str):
+                                m = re.search(r"\b\d{5,8}\b", raw)
+                                if m:
+                                    pmids.add(m.group(0))
+                            elif isinstance(raw, int) and 10000 <= raw <= 99_999_999:
+                                pmids.add(str(raw))
+                    for title in (parsed.get("title"),) + tuple(
+                        parsed.get("titles") or []
+                    ):
+                        if not isinstance(title, str) or not title.strip():
+                            continue
+                        t = re.sub(r"\s+", " ", title.strip()).rstrip(".")
                         if 20 <= len(t) <= 250 and t not in titles:
                             titles.append(t)
                 except (
