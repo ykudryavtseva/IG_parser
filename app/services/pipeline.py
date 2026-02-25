@@ -366,7 +366,12 @@ class EvidencePipeline:
         debug_counts: dict[str, int] | None = None,
     ) -> tuple[list[str], list[str]]:
         """One Vision call per image: extract PMIDs and/or title."""
-        if not self._openai_api_key or not image_urls:
+        if not image_urls:
+            return [], []
+        if not self._openai_api_key:
+            if debug_counts is not None:
+                debug_counts["images_failed"] = len(image_urls)
+                debug_counts["sample_status"] = "no_openai_key"
             return [], []
 
         headers = {

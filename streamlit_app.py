@@ -231,7 +231,14 @@ def main() -> None:
             all_failed = run_result.debug_images_failed > 0 and run_result.debug_images_fetched == 0
             sample_status = run_result.debug_sample_status
             cdn_blocked = has_images and all_failed and sample_status in ("403", "429", "401")
-            if cdn_blocked:
+            no_key_for_images = sample_status == "no_openai_key"
+            no_attempt = has_images and run_result.debug_images_fetched == 0 and run_result.debug_images_failed == 0
+            if no_key_for_images:
+                st.warning(
+                    "⚠ **Картинки не обрабатываются:** OPENAI_API_KEY не передан в пайплайн. "
+                    "Проверьте Secrets — ключ должен быть доступен при сборке пайплайна."
+                )
+            elif cdn_blocked:
                 st.error(
                     "🔒 **Instagram CDN блокирует запросы** (HTTP "
                     + sample_status
@@ -242,6 +249,11 @@ def main() -> None:
                 st.warning(
                     "Все картинки не удалось загрузить. "
                     "Возможно блокировка CDN Instagram. Используйте fallback по тексту или запустите локально."
+                )
+            elif no_attempt:
+                st.warning(
+                    "Картинки не загружались (0 попыток). Fallback по тексту должен сработать "
+                    "для постов с упоминанием «position stand», «ISSN» и т.п."
                 )
             if run_result.debug_pmids_fetch_failed > 0:
                 st.warning(
