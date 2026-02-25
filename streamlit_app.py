@@ -229,12 +229,12 @@ def main() -> None:
 
             has_images = run_result.debug_posts_with_images > 0
             all_failed = run_result.debug_images_failed > 0 and run_result.debug_images_fetched == 0
-            status = run_result.debug_sample_status
-            cdn_blocked = has_images and all_failed and status in ("403", "429", "401")
+            sample_status = run_result.debug_sample_status
+            cdn_blocked = has_images and all_failed and sample_status in ("403", "429", "401")
             if cdn_blocked:
                 st.error(
                     "🔒 **Instagram CDN блокирует запросы** (HTTP "
-                    + status
+                    + sample_status
                     + "). Сервера хостинга отклоняются — картинки не загружаются. "
                     "Результаты только по тексту. Запустите локально для полной обработки."
                 )
