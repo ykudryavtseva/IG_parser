@@ -539,6 +539,8 @@ class EvidencePipeline:
         ):
             candidates.append("position stand antioxidants exercise sports performance")
             candidates.append("International Society of Sports Nutrition position stand antioxidants")
+        elif "position" in text and "antioxidant" in text:
+            candidates.append("position stand antioxidants exercise sports performance")
 
         if not candidates:
             first_sentence = re.split(r"[.!?]\s+", caption.strip())[0].strip()
