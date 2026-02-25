@@ -34,3 +34,5 @@ class PipelineRunResult(BaseModel):
     debug_pmids_fetch_failed: int = 0
     debug_images_fetched: int = 0
     debug_images_failed: int = 0
+    debug_sample_url: str = ""
+    debug_sample_status: str = ""

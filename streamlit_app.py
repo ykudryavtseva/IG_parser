@@ -169,8 +169,12 @@ def main() -> None:
 
         has_sheets = bool(_get_secret("GOOGLE_SHEETS_SPREADSHEET_ID"))
 
+        openai_ok = bool(_get_secret("OPENAI_API_KEY"))
         with st.status("Обработка…", expanded=True) as status:
-            st.write("**1. Поиск постов и извлечение исследований**")
+            st.write(
+                f"**1. Поиск постов и извлечение исследований** "
+                f"(OPENAI: {'✓ ключ задан' if openai_ok else '⚠ ключ НЕ задан'})"
+            )
             try:
                 run_result = pipeline.run(
                     topic=topic.strip(),
@@ -196,6 +200,10 @@ def main() -> None:
                 f"Картинок загружено: {run_result.debug_images_fetched}, "
                 f"не удалось загрузить: {run_result.debug_images_failed}"
             )
+            if run_result.debug_sample_url:
+                with st.expander("Отладка: первый URL и статус загрузки"):
+                    st.code(run_result.debug_sample_url)
+                    st.write(f"Статус: `{run_result.debug_sample_status}`")
             if run_result.debug_images_failed > 0 and run_result.debug_images_fetched == 0:
                 st.warning(
                     "Все картинки не удалось загрузить (возможно, блокировка CDN Instagram). "

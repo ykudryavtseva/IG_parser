@@ -108,6 +108,9 @@ class EvidencePipeline:
         pmids_fetch_failed = sum(s.get("pmids_fetch_failed", 0) for s in debug_stats)
         images_fetched = sum(s.get("images_fetched", 0) for s in debug_stats)
         images_failed = sum(s.get("images_failed", 0) for s in debug_stats)
+        sample_entry = next(
+            (s for s in debug_stats if s.get("sample_url")), {}
+        )
         return PipelineRunResult(
             items=results,
             posts_fetched=len(posts),
@@ -118,6 +121,8 @@ class EvidencePipeline:
             debug_pmids_fetch_failed=pmids_fetch_failed,
             debug_images_fetched=images_fetched,
             debug_images_failed=images_failed,
+            debug_sample_url=sample_entry.get("sample_url", ""),
+            debug_sample_status=sample_entry.get("sample_status", ""),
         )
 
     def _process_post(
@@ -383,12 +388,19 @@ class EvidencePipeline:
         }
         with httpx.Client(timeout=25.0, headers=browser_headers) as client:
             for image_url in image_urls:
-                data_url = self._build_data_url(
+                data_url, status = self._build_data_url(
                     client=client,
                     image_url=image_url,
                 )
+                if debug_counts is not None and not debug_counts.get("sample_url"):
+                    debug_counts["sample_url"] = image_url[:120] + (
+                        "…" if len(image_url) > 120 else ""
+                    )
+                    debug_counts["sample_status"] = status
                 if not data_url:
+                    images_failed += 1
                     continue
+                images_fetched += 1
                 payload = {
                     "model": self._openai_model,
                     "response_format": {"type": "json_object"},
@@ -499,15 +511,22 @@ class EvidencePipeline:
         return pmids
 
     @staticmethod
-    def _build_data_url(client: httpx.Client, image_url: str) -> str | None:
+    def _build_data_url(
+        client: httpx.Client,
+        image_url: str,
+    ) -> tuple[str | None, str]:
+        """Fetch image and return (data_url, status). status is '200' or error code."""
         try:
             response = client.get(image_url, timeout=20.0)
             response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            status = str(getattr(e.response, "status_code", "?"))
+            return None, status
         except httpx.HTTPError:
-            return None
+            return None, "error"
 
         content_type = response.headers.get("content-type", "image/jpeg")
         if not content_type.startswith("image/"):
             content_type = "image/jpeg"
         encoded = base64.b64encode(response.content).decode("ascii")
-        return f"data:{content_type};base64,{encoded}"
+        return f"data:{content_type};base64,{encoded}", "200"
