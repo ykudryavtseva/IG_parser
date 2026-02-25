@@ -13,6 +13,9 @@ from app.services.relevance_service import StudyRelevanceChecker
 MAX_IMAGE_URLS_TO_SCAN = 5
 POST_PROCESS_WORKERS = 12
 
+# Приоритет извлечения: 1) картинка (скриншот PubMed с title/PMID)
+# 2) текст (PMID, ссылки) 3) поиск по названию из текста (вольный пересказ блогера)
+
 
 class EvidencePipeline:
     def __init__(
@@ -516,6 +519,7 @@ class EvidencePipeline:
             w in text for w in ("antioxidant", "exercise", "sports", "performance")
         ):
             candidates.append("position stand antioxidants exercise sports performance")
+            candidates.append("International Society of Sports Nutrition position stand antioxidants")
 
         if not candidates:
             first_sentence = re.split(r"[.!?]\s+", caption.strip())[0].strip()
