@@ -60,6 +60,8 @@ class EvidencePipeline:
             max_items=max_items,
         )
 
+        apify_debug = self._describe_first_post(posts)
+
         def _has_content(post: dict) -> bool:
             if not isinstance(post, dict):
                 return False
@@ -139,7 +141,34 @@ class EvidencePipeline:
             debug_sample_status=sample_entry.get("sample_status", ""),
             debug_first_caption_snippet=caption_entry.get("caption_snippet", ""),
             debug_title_candidates_tried=title_candidates_total,
+            debug_apify_first_post=apify_debug,
         )
+
+    @staticmethod
+    def _describe_first_post(posts: list[dict]) -> str:
+        """Describe first post structure for Apify format debugging."""
+        if not posts or not isinstance(posts[0], dict):
+            return "нет постов"
+        p = posts[0]
+        keys = sorted(p.keys())
+        lines = [f"Ключи ({len(keys)}): {', '.join(keys)}"]
+        for key in ("caption", "text", "captionText", "displayUrl", "imageUrl", "url"):
+            val = p.get(key)
+            if val is None:
+                lines.append(f"  {key}: None")
+            elif isinstance(val, str):
+                snip = val[:80] + "…" if len(val) > 80 else val
+                lines.append(f"  {key}: str({len(val)}) «{snip}»")
+            else:
+                lines.append(f"  {key}: {type(val).__name__}")
+        child_posts = p.get("childPosts") or []
+        if child_posts:
+            c = child_posts[0] if isinstance(child_posts[0], dict) else {}
+            lines.append(f"  childPosts[0] keys: {list(c.keys())[:10]}")
+            for k in ("displayUrl", "imageUrl"):
+                v = c.get(k)
+                lines.append(f"    child.{k}: {type(v).__name__ if v else 'None'}")
+        return "\n".join(lines)
 
     def _process_post(
         self,

@@ -38,3 +38,4 @@ class PipelineRunResult(BaseModel):
     debug_sample_status: str = ""
     debug_first_caption_snippet: str = ""
     debug_title_candidates_tried: int = 0
+    debug_apify_first_post: str = ""

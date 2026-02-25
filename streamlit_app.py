@@ -213,6 +213,9 @@ def main() -> None:
                 f"Получено постов: {run_result.posts_fetched}, "
                 f"с подписями: {run_result.posts_with_caption}"
             )
+            if run_result.debug_apify_first_post:
+                with st.expander("Формат Apify (структура первого поста)", expanded=True):
+                    st.code(run_result.debug_apify_first_post)
             st.write(
                 f"Постов с картинками: {run_result.debug_posts_with_images}, "
                 f"PMID из текста: {run_result.debug_pmids_from_text}, "
