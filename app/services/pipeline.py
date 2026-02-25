@@ -767,7 +767,7 @@ class EvidencePipeline:
         for value in candidates:
             if value and value not in unique:
                 unique.append(value)
-        return unique[:10]
+        return unique[:8]
 
     def _search_pmids_by_titles(
         self,
@@ -776,6 +776,8 @@ class EvidencePipeline:
     ) -> list[str]:
         pmids: list[str] = []
         for candidate in title_candidates:
+            if pmids:
+                break
             try:
                 matched = self._pubmed_client.search_pmids_by_title(
                     title=candidate,

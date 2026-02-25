@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 
 import httpx
 
-NCBI_RATE_LIMIT_DELAY = 0.4  # NCBI: max 3 req/sec without API key
+NCBI_RATE_LIMIT_DELAY = 0.55  # NCBI: max 3 req/sec without API key
 
 from app.models import ResearchItem
 
