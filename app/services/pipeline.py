@@ -128,6 +128,9 @@ class EvidencePipeline:
         title_candidates_total = sum(
             s.get("title_candidates_count", 0) for s in debug_stats
         )
+        pmids_from_title_total = sum(
+            s.get("pmids_from_title", 0) for s in debug_stats
+        )
         return PipelineRunResult(
             items=results,
             posts_fetched=len(posts),
@@ -144,6 +147,7 @@ class EvidencePipeline:
             debug_title_candidates_tried=title_candidates_total,
             debug_apify_first_post=apify_debug,
             debug_total_image_urls=total_image_urls,
+            debug_pmids_from_title_search=pmids_from_title_total,
         )
 
     @staticmethod
@@ -226,6 +230,8 @@ class EvidencePipeline:
                 entry["caption_snippet"] = caption[:250] if caption else ""
                 entry["title_candidates_count"] = len(title_candidates)
             pmids = self._search_pmids_by_titles(title_candidates=title_candidates)
+            if debug_stats:
+                entry["pmids_from_title"] = len(pmids)
         if not pmids:
             return None
 

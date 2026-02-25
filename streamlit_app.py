@@ -292,7 +292,8 @@ def main() -> None:
                         else:
                             st.write("**Фрагмент подписи:** (пусто)")
                         st.write(
-                            f"**Поиск по названию:** {run_result.debug_title_candidates_tried} кандидатов"
+                            f"**Поиск по названию:** {run_result.debug_title_candidates_tried} кандидатов → "
+                            f"найдено PMID: {run_result.debug_pmids_from_title_search}"
                         )
                 else:
                     st.info(
