@@ -115,6 +115,7 @@ class EvidencePipeline:
         pmids_text = sum(s.get("pmids_text", 0) for s in debug_stats)
         pmids_images = sum(s.get("pmids_images", 0) for s in debug_stats)
         posts_with_images = sum(1 for s in debug_stats if s.get("image_urls", 0) > 0)
+        total_image_urls = sum(s.get("image_urls", 0) for s in debug_stats)
         pmids_fetch_failed = sum(s.get("pmids_fetch_failed", 0) for s in debug_stats)
         images_fetched = sum(s.get("images_fetched", 0) for s in debug_stats)
         images_failed = sum(s.get("images_failed", 0) for s in debug_stats)
@@ -142,6 +143,7 @@ class EvidencePipeline:
             debug_first_caption_snippet=caption_entry.get("caption_snippet", ""),
             debug_title_candidates_tried=title_candidates_total,
             debug_apify_first_post=apify_debug,
+            debug_total_image_urls=total_image_urls,
         )
 
     @staticmethod
@@ -198,6 +200,9 @@ class EvidencePipeline:
             }
             debug_stats.append(entry)
         if image_urls:
+            if debug_stats and entry:
+                entry["images_fetched"] = 0
+                entry["images_failed"] = 0
             pmids_from_images, image_title_candidates = (
                 self._extract_pmids_and_titles_from_images(
                     image_urls=image_urls,
@@ -453,81 +458,91 @@ class EvidencePipeline:
             ),
             "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
         }
-        with httpx.Client(timeout=25.0, headers=browser_headers) as client:
-            for image_url in image_urls:
-                data_url, status = self._build_data_url(
-                    client=client,
-                    image_url=image_url,
-                )
-                if debug_counts is not None and not debug_counts.get("sample_url"):
-                    debug_counts["sample_url"] = image_url[:120] + (
-                        "…" if len(image_url) > 120 else ""
+        try:
+            with httpx.Client(timeout=25.0, headers=browser_headers) as client:
+                for image_url in image_urls:
+                    data_url, status = self._build_data_url(
+                        client=client,
+                        image_url=image_url,
                     )
-                    debug_counts["sample_status"] = status
-                if not data_url:
-                    images_failed += 1
-                    continue
-                images_fetched += 1
-                payload = {
-                    "model": self._openai_model,
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": system_prompt,
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": (
-                                        "Извлеки PMID и/или название статьи. "
-                                        "Даже если PMID не виден — дай title, чтобы искать в PubMed."
-                                    ),
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": data_url},
-                                },
-                            ],
-                        },
-                    ],
-                    "temperature": 0,
-                }
-                try:
-                    response = client.post(
-                        "https://api.openai.com/v1/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    content = response.json()["choices"][0]["message"]["content"]
-                    parsed = json.loads(content)
-                    raw_pmids = parsed.get("pmids")
-                    if isinstance(raw_pmids, list):
-                        for raw in raw_pmids:
-                            if isinstance(raw, str):
-                                m = re.search(r"\b\d{5,8}\b", raw)
-                                if m:
-                                    pmids.add(m.group(0))
-                            elif isinstance(raw, int) and 10000 <= raw <= 99_999_999:
-                                pmids.add(str(raw))
-                    for title in (parsed.get("title"),) + tuple(
-                        parsed.get("titles") or []
+                    if debug_counts is not None and not debug_counts.get("sample_url"):
+                        debug_counts["sample_url"] = image_url[:120] + (
+                            "…" if len(image_url) > 120 else ""
+                        )
+                        debug_counts["sample_status"] = status
+                    if not data_url:
+                        images_failed += 1
+                        continue
+                    images_fetched += 1
+                    payload = {
+                        "model": self._openai_model,
+                        "response_format": {"type": "json_object"},
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": system_prompt,
+                            },
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "Извлеки PMID и/или название статьи. "
+                                            "Даже если PMID не виден — дай title, чтобы искать в PubMed."
+                                        ),
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": data_url},
+                                    },
+                                ],
+                            },
+                        ],
+                        "temperature": 0,
+                    }
+                    try:
+                        response = client.post(
+                            "https://api.openai.com/v1/chat/completions",
+                            headers=headers,
+                            json=payload,
+                        )
+                        response.raise_for_status()
+                        content = response.json()["choices"][0]["message"]["content"]
+                        parsed = json.loads(content)
+                        raw_pmids = parsed.get("pmids")
+                        if isinstance(raw_pmids, list):
+                            for raw in raw_pmids:
+                                if isinstance(raw, str):
+                                    m = re.search(r"\b\d{5,8}\b", raw)
+                                    if m:
+                                        pmids.add(m.group(0))
+                                elif isinstance(raw, int) and 10000 <= raw <= 99_999_999:
+                                    pmids.add(str(raw))
+                        for title in (parsed.get("title"),) + tuple(
+                            parsed.get("titles") or []
+                        ):
+                            if not isinstance(title, str) or not title.strip():
+                                continue
+                            t = re.sub(r"\s+", " ", title.strip()).rstrip(".")
+                            if 15 <= len(t) <= 350 and t not in titles:
+                                titles.append(t)
+                    except (
+                        httpx.HTTPError,
+                        KeyError,
+                        ValueError,
+                        json.JSONDecodeError,
                     ):
-                        if not isinstance(title, str) or not title.strip():
-                            continue
-                        t = re.sub(r"\s+", " ", title.strip()).rstrip(".")
-                        if 15 <= len(t) <= 350 and t not in titles:
-                            titles.append(t)
-                except (
-                    httpx.HTTPError,
-                    KeyError,
-                    ValueError,
-                    json.JSONDecodeError,
-                ):
-                    continue
+                        continue
+        except Exception as e:
+            logging.getLogger(__name__).exception(
+                "image_extraction_error urls=%s", len(image_urls), exc_info=True
+            )
+            if debug_counts is not None:
+                debug_counts["images_failed"] = len(image_urls)
+                debug_counts["images_fetched"] = 0
+                debug_counts["sample_status"] = f"error:{type(e).__name__}"
+            return [], []
 
         if debug_counts is not None:
             debug_counts["images_fetched"] = images_fetched

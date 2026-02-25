@@ -217,7 +217,8 @@ def main() -> None:
                 with st.expander("Формат Apify (структура первого поста)", expanded=True):
                     st.code(run_result.debug_apify_first_post)
             st.write(
-                f"Постов с картинками: {run_result.debug_posts_with_images}, "
+                f"URL картинок извлечено: {run_result.debug_total_image_urls}, "
+                f"постов с картинками: {run_result.debug_posts_with_images}, "
                 f"PMID из текста: {run_result.debug_pmids_from_text}, "
                 f"PMID из картинок: {run_result.debug_pmids_from_images}"
             )
