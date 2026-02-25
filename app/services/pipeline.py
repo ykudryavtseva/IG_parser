@@ -81,7 +81,11 @@ class EvidencePipeline:
             return False
 
         posts_to_process = [p for p in posts if _has_content(p)]
-        workers = min(POST_PROCESS_WORKERS, len(posts_to_process) or 1)
+        workers = (
+            1
+            if latest_posts_mode
+            else min(POST_PROCESS_WORKERS, len(posts_to_process) or 1)
+        )
 
         debug_stats: list[dict] = []
         results: list[PostEvidence] = []
