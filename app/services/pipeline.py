@@ -487,8 +487,9 @@ class EvidencePipeline:
     @staticmethod
     def _extract_title_candidates(post_text: str, caption: str) -> list[str]:
         candidates: list[str] = []
+        text = f"{post_text}\n{caption}".lower()
 
-        lines = [line.strip() for line in post_text.splitlines() if line.strip()]
+        lines = [line.strip() for line in (post_text + "\n" + caption).splitlines() if line.strip()]
         for line in lines[:12]:
             if len(line) < 15:
                 continue
@@ -500,6 +501,22 @@ class EvidencePipeline:
                 continue
             candidates.append(line.rstrip("."))
 
+        research_markers = [
+            r"(?:issn\s+)?position\s+stand[^.!?\n]{10,150}",
+            r"(?:systematic\s+review|meta-?analysis)[^.!?\n]{10,150}",
+            r"(?:this\s+(?:new\s+)?(?:paper|study|research)|new\s+(?:paper|study))[^.!?\n]{15,100}",
+        ]
+        for pattern in research_markers:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                phrase = re.sub(r"\s+", " ", match.group(0).strip())[:150]
+                if len(phrase) >= 20:
+                    candidates.append(phrase)
+
+        if "position stand" in text and any(
+            w in text for w in ("antioxidant", "exercise", "sports", "performance")
+        ):
+            candidates.append("position stand antioxidants exercise sports performance")
+
         if not candidates:
             first_sentence = re.split(r"[.!?]\s+", caption.strip())[0].strip()
             if 15 <= len(first_sentence) <= 300:
@@ -507,9 +524,9 @@ class EvidencePipeline:
 
         unique: list[str] = []
         for value in candidates:
-            if value not in unique:
+            if value and value not in unique:
                 unique.append(value)
-        return unique[:8]
+        return unique[:10]
 
     def _search_pmids_by_titles(self, title_candidates: list[str]) -> list[str]:
         pmids: list[str] = []

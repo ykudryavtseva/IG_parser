@@ -124,7 +124,7 @@ def main() -> None:
         "Блогер(ы) (через запятую)",
         value="dangarnernutrition",
         placeholder="dangarnernutrition",
-        help="Instagram username без @.",
+        help="Instagram username без @. Проверьте написание (например dangarnernutrition, не dangamernutrition).",
     )
 
     if latest_posts_mode:
