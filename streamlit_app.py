@@ -280,6 +280,15 @@ def main() -> None:
                         "В последних постах не обнаружено PMID или исследований. "
                         "Проверьте, что пост содержит скриншоты PubMed или ссылки."
                     )
+                    if run_result.debug_first_caption_snippet or run_result.debug_title_candidates_tried:
+                        with st.expander("Диагностика: caption и поиск по названию"):
+                            if run_result.debug_first_caption_snippet:
+                                snip = run_result.debug_first_caption_snippet
+                                st.write("**Фрагмент подписи:**")
+                                st.code(snip[:300] + ("…" if len(snip) > 300 else ""))
+                            st.write(
+                                f"**Поиск по названию:** {run_result.debug_title_candidates_tried} кандидатов"
+                            )
                 else:
                     st.info(
                         "Релевантных постов с исследованиями не найдено. "

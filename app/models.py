@@ -36,3 +36,5 @@ class PipelineRunResult(BaseModel):
     debug_images_failed: int = 0
     debug_sample_url: str = ""
     debug_sample_status: str = ""
+    debug_first_caption_snippet: str = ""
+    debug_title_candidates_tried: int = 0

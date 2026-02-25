@@ -119,6 +119,12 @@ class EvidencePipeline:
         sample_entry = next(
             (s for s in debug_stats if s.get("sample_url")), {}
         )
+        caption_entry = next(
+            (s for s in debug_stats if s.get("caption_snippet")), {}
+        )
+        title_candidates_total = sum(
+            s.get("title_candidates_count", 0) for s in debug_stats
+        )
         return PipelineRunResult(
             items=results,
             posts_fetched=len(posts),
@@ -131,6 +137,8 @@ class EvidencePipeline:
             debug_images_failed=images_failed,
             debug_sample_url=sample_entry.get("sample_url", ""),
             debug_sample_status=sample_entry.get("sample_status", ""),
+            debug_first_caption_snippet=caption_entry.get("caption_snippet", ""),
+            debug_title_candidates_tried=title_candidates_total,
         )
 
     def _process_post(
@@ -141,7 +149,10 @@ class EvidencePipeline:
         debug_stats: list[dict] | None = None,
     ) -> PostEvidence | None:
         post_url = post.get("url") or "<no-url>"
-        caption = (post.get("caption") or "").strip()
+        caption = (
+            (post.get("caption") or post.get("text") or post.get("captionText") or "")
+            .strip()
+        )
 
         post_text = self._extract_post_text(post=post, caption=caption)
         pmids_from_text = self._pubmed_client.extract_pmids(post_text)
@@ -177,6 +188,9 @@ class EvidencePipeline:
             for title in image_title_candidates:
                 if title not in title_candidates:
                     title_candidates.append(title)
+            if debug_stats:
+                entry["caption_snippet"] = caption[:250] if caption else ""
+                entry["title_candidates_count"] = len(title_candidates)
             pmids = self._search_pmids_by_titles(title_candidates=title_candidates)
         if not pmids:
             return None
