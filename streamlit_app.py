@@ -226,10 +226,22 @@ def main() -> None:
                 with st.expander("Отладка: первый URL и статус загрузки"):
                     st.code(run_result.debug_sample_url)
                     st.write(f"Статус: `{run_result.debug_sample_status}`")
-            if run_result.debug_images_failed > 0 and run_result.debug_images_fetched == 0:
+
+            has_images = run_result.debug_posts_with_images > 0
+            all_failed = run_result.debug_images_failed > 0 and run_result.debug_images_fetched == 0
+            status = run_result.debug_sample_status
+            cdn_blocked = has_images and all_failed and status in ("403", "429", "401")
+            if cdn_blocked:
+                st.error(
+                    "🔒 **Instagram CDN блокирует запросы** (HTTP "
+                    + status
+                    + "). Сервера хостинга отклоняются — картинки не загружаются. "
+                    "Результаты только по тексту. Запустите локально для полной обработки."
+                )
+            elif all_failed:
                 st.warning(
-                    "Все картинки не удалось загрузить (возможно, блокировка CDN Instagram). "
-                    "Добавлен User-Agent браузера для обхода."
+                    "Все картинки не удалось загрузить. "
+                    "Возможно блокировка CDN Instagram. Используйте fallback по тексту или запустите локально."
                 )
             if run_result.debug_pmids_fetch_failed > 0:
                 st.warning(
