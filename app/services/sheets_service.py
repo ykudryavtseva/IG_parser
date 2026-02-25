@@ -173,6 +173,8 @@ class GoogleSheetsExporter:
         return study.authors[0]
 
     def _study_tag(self, item: PostEvidence, study: ResearchItem) -> str:
+        if study.tags:
+            return ", ".join(study.tags[:4])
         cache_key = f"{item.topic}|{study.title}"
         if cache_key in self._ai_cache:
             return ", ".join(self._ai_cache[cache_key])
@@ -216,25 +218,16 @@ class GoogleSheetsExporter:
         if not self._openai_api_key:
             return None
 
-        allowed_tags = [
-            "витамин D",
-            "креатин",
-            "БАДы",
-            "выпадение волос",
-            "здоровье",
-            "нейронаука",
-            "спорт",
-            "метаболизм",
-            "другое",
-        ]
+        article_text = study.title
+        if study.abstract and study.abstract.strip():
+            article_text += "\n\n" + study.abstract[:2000].rstrip()
+
         prompt = (
-            "Выбери 1-3 подходящих тега исследования из списка: "
-            + ", ".join(allowed_tags)
-            + ".\n"
-            + f"Вопрос: {item.topic}\n"
-            + f"Саммари поста: {item.summary}\n"
-            + f"Название исследования: {study.title}\n"
-            + "Верни только JSON вида {\"tags\": [\"...\", \"...\"]}."
+            "Прочитай статью и выбери 3–4 главных тега (ключевых слова), "
+            "которые описывают её содержание. Теги: короткие (1–3 слова), "
+            "на том же языке, что и статья. "
+            "Верни только JSON: {\"tags\": [\"тег1\", \"тег2\", \"тег3\", \"тег4\"]}.\n\n"
+            f"Статья:\n{article_text}"
         )
 
         payload = {
@@ -243,11 +236,14 @@ class GoogleSheetsExporter:
             "messages": [
                 {
                     "role": "system",
-                    "content": "Ты классификатор медицинских исследований и БАДов.",
+                    "content": (
+                        "Ты помогаешь извлекать теги из научных статей. "
+                        "Возвращай только валидный JSON с полем tags."
+                    ),
                 },
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0,
+            "temperature": 0.2,
         }
         headers = {
             "Authorization": f"Bearer {self._openai_api_key}",
@@ -255,7 +251,7 @@ class GoogleSheetsExporter:
         }
 
         try:
-            with httpx.Client(timeout=20.0) as client:
+            with httpx.Client(timeout=25.0) as client:
                 response = client.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers=headers,
@@ -277,17 +273,12 @@ class GoogleSheetsExporter:
 
         tags: list[str] = []
         for value in raw_tags:
-            if not isinstance(value, str):
-                continue
-            normalized_value = value.strip().lower()
-            for allowed in allowed_tags:
-                if allowed.lower() == normalized_value and allowed not in tags:
-                    tags.append(allowed)
-                    break
+            if isinstance(value, str) and value.strip():
+                t = value.strip()[:50]
+                if t and t not in tags:
+                    tags.append(t)
 
-        if not tags:
-            return None
-        return tags[:3]
+        return tags[:4] if tags else None
 
     @staticmethod
     def _build_service(

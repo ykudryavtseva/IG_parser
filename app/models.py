@@ -8,6 +8,8 @@ class ResearchItem(BaseModel):
     pmid: str
     pmid_url: str
     full_text_url: str | None = None
+    abstract: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class PostEvidence(BaseModel):
@@ -41,3 +43,5 @@ class PipelineRunResult(BaseModel):
     debug_apify_first_post: str = ""
     debug_total_image_urls: int = 0
     debug_pmids_from_title_search: int = 0
+    debug_pubmed_search_error: str = ""
+    debug_first_title_candidate: str = ""

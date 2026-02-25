@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
-from app.models import PipelineRunResult, PostEvidence
+from app.models import PipelineRunResult, PostEvidence, ResearchItem
 from app.services.apify_service import ApifyInstagramClient
 from app.services.pubmed_service import PubMedClient
 from app.services.relevance_service import StudyRelevanceChecker
@@ -131,6 +131,10 @@ class EvidencePipeline:
         pmids_from_title_total = sum(
             s.get("pmids_from_title", 0) for s in debug_stats
         )
+        pubmed_error = next(
+            (s.get("pubmed_error") for s in debug_stats if s.get("pubmed_error")),
+            "",
+        )
         return PipelineRunResult(
             items=results,
             posts_fetched=len(posts),
@@ -148,6 +152,15 @@ class EvidencePipeline:
             debug_apify_first_post=apify_debug,
             debug_total_image_urls=total_image_urls,
             debug_pmids_from_title_search=pmids_from_title_total,
+            debug_pubmed_search_error=pubmed_error,
+            debug_first_title_candidate=next(
+                (
+                    s.get("first_title_candidate")
+                    for s in debug_stats
+                    if s.get("first_title_candidate")
+                ),
+                "",
+            ),
         )
 
     @staticmethod
@@ -219,63 +232,72 @@ class EvidencePipeline:
 
         pmids = sorted(set(pmids_from_text + pmids_from_images))
         if not pmids:
-            title_candidates = self._extract_title_candidates(
+            caption_candidates = self._extract_title_candidates(
                 post_text=post_text,
                 caption=caption,
             )
-            for title in image_title_candidates:
-                if title not in title_candidates:
-                    title_candidates.append(title)
+            title_candidates = list(image_title_candidates)
+            for t in caption_candidates:
+                if t not in title_candidates:
+                    title_candidates.append(t)
             if debug_stats:
                 entry["caption_snippet"] = caption[:250] if caption else ""
                 entry["title_candidates_count"] = len(title_candidates)
-            pmids = self._search_pmids_by_titles(title_candidates=title_candidates)
+                entry["first_title_candidate"] = (
+                    title_candidates[0][:120] if title_candidates else ""
+                )
+            pmids = self._search_pmids_by_titles(
+                title_candidates=title_candidates,
+                debug_out=entry if debug_stats else None,
+            )
             if debug_stats:
                 entry["pmids_from_title"] = len(pmids)
         if not pmids:
             return None
 
         pmids_from_images_set = set(pmids_from_images)
-        topic_words = [
-            w.lower()
-            for w in re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9-]+", topic)
-            if len(w) >= 4
-        ]
+        primary_pmid = (
+            next((p for p in pmids if p in pmids_from_images_set), None)
+            or pmids[0]
+        )
 
-        studies = []
+        try:
+            primary_study = self._pubmed_client.fetch_study(primary_pmid)
+        except (httpx.HTTPError, KeyError, ValueError):
+            logging.getLogger(__name__).info(
+                "pubmed_fetch_failed pmid=%s", primary_pmid, exc_info=True
+            )
+            return None
+
+        related_pmids = self._pubmed_client.fetch_related_pmids(
+            pmid=primary_pmid,
+            max_results=10,
+        )
+        studies = [primary_study]
         fetch_failed = 0
-        for pmid in pmids:
+        for pmid in related_pmids:
+            if pmid == primary_pmid:
+                continue
             try:
                 study = self._pubmed_client.fetch_study(pmid)
+                studies.append(study)
             except (httpx.HTTPError, KeyError, ValueError):
                 fetch_failed += 1
                 logging.getLogger(__name__).info(
                     "pubmed_fetch_failed pmid=%s", pmid, exc_info=True
                 )
-                continue
-            if pmid in pmids_from_images_set:
-                studies.append(study)
-                continue
-            if skip_relevance:
-                studies.append(study)
-                continue
-            if not self._relevance_checker.is_relevant(
-                topic=topic,
-                study_title=study.title,
-            ):
-                title_low = study.title.lower()
-                if not any(w in title_low for w in topic_words):
-                    continue
-            studies.append(study)
 
-        if debug_stats and pmids:
-            debug_stats[-1]["pmids_attempted"] = len(pmids)
+        if debug_stats:
+            debug_stats[-1]["pmids_attempted"] = 1 + len(related_pmids)
             debug_stats[-1]["pmids_fetch_failed"] = fetch_failed
 
         if not studies:
             return None
 
-        tags = self._build_tags(topic=topic, caption=caption)
+        studies = self._attach_study_tags(studies=studies)
+        tags = self._post_tags_from_studies(studies) or self._build_tags(
+            topic=topic, caption=caption
+        )
         summary = self._build_summary(post=post, caption=caption)
         display_topic = topic or self._topic_from_caption(caption, post)
         return PostEvidence(
@@ -305,9 +327,146 @@ class EvidencePipeline:
         username = (post.get("owner") or {}).get("username") or post.get("ownerUsername")
         return f"Пост {username or 'блогера'}" if username else "Последний пост"
 
+    def _build_summary(self, post: dict, caption: str) -> str:
+        """Short rephrasing for table: what the blogger says about the research."""
+        fallback = self._build_summary_fallback(caption)
+        if not self._openai_api_key:
+            return fallback
+        clean_caption = re.sub(r"\s+", " ", caption).strip()
+        if len(clean_caption) < 30:
+            return fallback
+        try:
+            return self._summarize_with_ai(caption=clean_caption) or fallback
+        except Exception:
+            return fallback
+
+    def _summarize_with_ai(self, caption: str) -> str | None:
+        """Use OpenAI to rephrase the post into a short summary."""
+        payload = {
+            "model": self._openai_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты помогаешь кратко пересказать пост блогера о научном исследовании. "
+                        "Напиши 2–4 законченных предложения: о чём пост, какой вывод делает блогер, "
+                        "что важного в исследовании. Перефразируй, не копируй текст. "
+                        "Сохраняй важные цифры, факты, названия (427 человек, 47 лет и т.д.). "
+                        "Каждое предложение должно быть логически завершённым. "
+                        "Язык: тот же, что в посте. Только текст саммари, без преамбулы."
+                    ),
+                },
+                {"role": "user", "content": caption[:3000]},
+            ],
+            "temperature": 0.3,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._openai_api_key}",
+            "Content-Type": "application/json",
+        }
+        with httpx.Client(timeout=25.0) as client:
+            response = client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            text = response.json()["choices"][0]["message"]["content"].strip()
+            return self._truncate_summary_at_sentence(text, max_len=600) if text else None
+
     @staticmethod
-    def _build_summary(post: dict, caption: str) -> str:
-        """Short summary for table: what the blogger writes about the research."""
+    def _truncate_summary_at_sentence(text: str, max_len: int = 600) -> str:
+        """Truncate at last complete sentence to avoid cut-off thoughts."""
+        if len(text) <= max_len:
+            return text
+        chunk = text[: max_len + 1]
+        last = max(
+            chunk.rfind(". "),
+            chunk.rfind("! "),
+            chunk.rfind("? "),
+        )
+        if last > max_len * 0.4:
+            return chunk[: last + 1].strip()
+        return chunk[:max_len].rstrip()
+
+    def _attach_study_tags(self, studies: list) -> list:
+        """Add AI-generated tags to each study."""
+        if not self._openai_api_key:
+            return studies
+        result: list = []
+        for study in studies:
+            ai_tags = self._generate_study_tags(study=study)
+            if ai_tags:
+                result.append(
+                    study.model_copy(update={"tags": ai_tags})
+                )
+            else:
+                result.append(study)
+        return result
+
+    def _generate_study_tags(self, study: ResearchItem) -> list[str]:
+        """Use OpenAI to extract 3-4 tags from article title+abstract."""
+        article_text = study.title
+        if study.abstract and study.abstract.strip():
+            article_text += "\n\n" + study.abstract[:2000].rstrip()
+        payload = {
+            "model": self._openai_model,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Прочитай статью и выбери 3–4 главных тега (ключевых слова). "
+                        "Теги: короткие (1–3 слова), на том же языке, что и статья. "
+                        "Верни только JSON: {\"tags\": [\"тег1\", \"тег2\", \"тег3\", \"тег4\"]}."
+                    ),
+                },
+                {"role": "user", "content": f"Статья:\n{article_text}"},
+            ],
+            "temperature": 0.2,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._openai_api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            with httpx.Client(timeout=25.0) as client:
+                response = client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                content = response.json()["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+            raw = parsed.get("tags")
+            if isinstance(raw, list):
+                tags = [
+                    str(v).strip()[:50]
+                    for v in raw
+                    if isinstance(v, str) and v.strip()
+                ]
+                seen: set[str] = set()
+                unique = [t for t in tags if t and t not in seen and not seen.add(t)]
+                return unique[:4]
+        except Exception:
+            pass
+        return []
+
+    @staticmethod
+    def _post_tags_from_studies(studies: list) -> list[str] | None:
+        """Aggregate tags from studies for post-level display."""
+        all_tags: list[str] = []
+        for s in studies:
+            if hasattr(s, "tags") and s.tags:
+                for t in s.tags:
+                    if t and t not in all_tags:
+                        all_tags.append(t)
+        return all_tags[:6] if all_tags else None
+
+    @staticmethod
+    def _build_summary_fallback(caption: str) -> str:
+        """Fallback when AI unavailable: truncated caption."""
         clean_caption = re.sub(r"\s+", " ", caption).strip()
         if clean_caption:
             return clean_caption[:500].rstrip()
@@ -560,6 +719,13 @@ class EvidencePipeline:
     def _extract_title_candidates(post_text: str, caption: str) -> list[str]:
         candidates: list[str] = []
         text = f"{post_text}\n{caption}".lower()
+        if "position stand" in text and any(
+            w in text for w in ("antioxidant", "exercise", "sports", "performance")
+        ):
+            candidates.append(
+                "International Society of Sports Nutrition position stand: "
+                "effects of dietary antioxidants on exercise and sports performance"
+            )
 
         lines = [line.strip() for line in (post_text + "\n" + caption).splitlines() if line.strip()]
         for line in lines[:12]:
@@ -589,7 +755,7 @@ class EvidencePipeline:
         ):
             candidates.append("position stand antioxidants exercise sports performance")
             candidates.append("International Society of Sports Nutrition position stand antioxidants")
-        elif "position" in text and "antioxidant" in text:
+        if "position" in text and "antioxidant" in text:
             candidates.append("position stand antioxidants exercise sports performance")
 
         if not candidates:
@@ -603,7 +769,11 @@ class EvidencePipeline:
                 unique.append(value)
         return unique[:10]
 
-    def _search_pmids_by_titles(self, title_candidates: list[str]) -> list[str]:
+    def _search_pmids_by_titles(
+        self,
+        title_candidates: list[str],
+        debug_out: dict | None = None,
+    ) -> list[str]:
         pmids: list[str] = []
         for candidate in title_candidates:
             try:
@@ -611,7 +781,17 @@ class EvidencePipeline:
                     title=candidate,
                     max_results=5,
                 )
-            except httpx.HTTPError:
+            except httpx.HTTPError as e:
+                if debug_out is not None and "pubmed_error" not in debug_out:
+                    debug_out["pubmed_error"] = (
+                        f"{type(e).__name__}: {str(e)[:150]}"
+                    )
+                logging.getLogger(__name__).warning(
+                    "pubmed_search_failed candidate=%s error=%s",
+                    candidate[:50],
+                    e,
+                    exc_info=True,
+                )
                 continue
             for pmid in matched:
                 if pmid not in pmids:

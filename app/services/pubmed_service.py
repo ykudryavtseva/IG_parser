@@ -1,6 +1,10 @@
 import re
+import time
+import xml.etree.ElementTree as ET
 
 import httpx
+
+NCBI_RATE_LIMIT_DELAY = 0.4  # NCBI: max 3 req/sec without API key
 
 from app.models import ResearchItem
 
@@ -48,6 +52,7 @@ class PubMedClient:
             params["email"] = self._email
 
         with httpx.Client(timeout=20.0) as client:
+            time.sleep(NCBI_RATE_LIMIT_DELAY)
             summary_response = client.get(
                 f"{self._base}/esummary.fcgi",
                 params=params,
@@ -55,6 +60,7 @@ class PubMedClient:
             summary_response.raise_for_status()
             summary_data = summary_response.json()
 
+            time.sleep(NCBI_RATE_LIMIT_DELAY)
             pmc_response = client.get(
                 f"{self._base}/elink.fcgi",
                 params={
@@ -73,6 +79,7 @@ class PubMedClient:
         authors = [author["name"] for author in result.get("authors", [])]
         year = self._extract_year(result.get("pubdate", ""))
         full_text_url = self._extract_pmc_url(pmc_data)
+        abstract = self._fetch_abstract(pmid)
 
         return ResearchItem(
             title=result.get("title", "").strip(),
@@ -81,14 +88,57 @@ class PubMedClient:
             pmid=pmid,
             pmid_url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
             full_text_url=full_text_url,
+            abstract=abstract,
         )
+
+    def _fetch_abstract(self, pmid: str) -> str | None:
+        """Fetch article abstract via efetch. Returns None on failure."""
+        params = {
+            "db": "pubmed",
+            "id": pmid,
+            "retmode": "xml",
+            "tool": self._tool,
+        }
+        if self._email:
+            params["email"] = self._email
+        try:
+            time.sleep(NCBI_RATE_LIMIT_DELAY)
+            with httpx.Client(timeout=25.0) as client:
+                response = client.get(
+                    f"{self._base}/efetch.fcgi",
+                    params=params,
+                )
+                response.raise_for_status()
+                body = response.text
+            root = ET.fromstring(body)
+            parts: list[str] = []
+            for elem in root.iter():
+                if elem.tag.endswith("}AbstractText") or elem.tag == "AbstractText":
+                    if elem.text:
+                        parts.append(elem.text.strip())
+            if parts:
+                return " ".join(parts)[:3000]
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def _sanitize_title_for_query(title: str) -> str:
+        """Remove/escape chars that break PubMed query syntax."""
+        t = title.strip()
+        t = t.replace("[", "").replace("]", "")
+        t = t.replace('"', " ").replace("'", " ")
+        return re.sub(r"\s+", " ", t).strip()
 
     def search_pmids_by_title(
         self,
         title: str,
         max_results: int = 5,
     ) -> list[str]:
-        cleaned_title = title.strip()
+        raw = title.strip()
+        if not raw:
+            return []
+        cleaned_title = self._sanitize_title_for_query(raw)
         if not cleaned_title:
             return []
 
@@ -96,6 +146,11 @@ class PubMedClient:
             f"\"{cleaned_title}\"[Title]",
             f"\"{cleaned_title}\"[Title/Abstract]",
         ]
+        if "position stand" in raw.lower() and "antioxidant" in raw.lower():
+            query_candidates.insert(
+                0,
+                '"position stand"[Title] AND antioxidants[Title]',
+            )
         token_query = self._build_token_query(cleaned_title=cleaned_title)
         if token_query:
             query_candidates.append(token_query)
@@ -121,6 +176,7 @@ class PubMedClient:
         query: str,
         max_results: int,
     ) -> list[str]:
+        time.sleep(NCBI_RATE_LIMIT_DELAY)
         params = {
             "db": "pubmed",
             "retmode": "json",
@@ -166,6 +222,54 @@ class PubMedClient:
         if not tokens:
             return ""
         return " AND ".join(f"{token}[Title/Abstract]" for token in tokens)
+
+    def fetch_related_pmids(
+        self,
+        pmid: str,
+        max_results: int = 10,
+    ) -> list[str]:
+        """
+        Fetch related/similar articles from PubMed (references + cited-in).
+        Returns up to max_results PMIDs.
+        """
+        params = {
+            "dbfrom": "pubmed",
+            "db": "pubmed",
+            "id": pmid,
+            "retmode": "json",
+            "tool": self._tool,
+        }
+        if self._email:
+            params["email"] = self._email
+        try:
+            time.sleep(NCBI_RATE_LIMIT_DELAY)
+            with httpx.Client(timeout=25.0) as client:
+                response = client.get(
+                    f"{self._base}/elink.fcgi",
+                    params=params,
+                )
+                response.raise_for_status()
+                data = response.json()
+        except Exception:
+            return []
+
+        collected: list[str] = []
+        pmid_str = str(pmid)
+        linksets = data.get("linksets", [])
+        for linkset in linksets:
+            for linksetdb in linkset.get("linksetdbs", []):
+                if linksetdb.get("dbto") != "pubmed":
+                    continue
+                linkname = linksetdb.get("linkname", "")
+                links = linksetdb.get("links", [])
+                for item in links:
+                    sid = str(item) if isinstance(item, (str, int)) else None
+                    if sid and sid != pmid_str and sid not in collected:
+                        collected.append(sid)
+                        if len(collected) >= max_results:
+                            return collected[:max_results]
+
+        return collected[:max_results]
 
     @staticmethod
     def _extract_year(pubdate: str) -> int | None:

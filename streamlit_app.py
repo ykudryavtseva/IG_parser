@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 
 from dotenv import load_dotenv
 
@@ -24,7 +25,7 @@ def _get_secret(key: str, default: str = "") -> str:
             val = secrets.get(key)
             if val:
                 return str(val)
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, StreamlitSecretNotFoundError):
         pass
     return os.getenv(key, default)
 
@@ -111,15 +112,6 @@ def main() -> None:
     st.title("🔬 IG Parser — Instagram → PubMed")
     st.caption(f"Версия {APP_VERSION}")
 
-    mode = st.radio(
-        "Режим",
-        ["Последние посты", "Поиск по теме"],
-        horizontal=True,
-        help="«Последние посты» — парсит N последних постов блогера и извлекает исследования. "
-        "«Поиск по теме» — ищет по теме по нескольким источникам.",
-    )
-    latest_posts_mode = mode == "Последние посты"
-
     sources_input = st.text_input(
         "Блогер(ы) (через запятую)",
         value="dangarnernutrition",
@@ -127,57 +119,21 @@ def main() -> None:
         help="Instagram username без @. Проверьте написание (например dangarnernutrition, не dangamernutrition).",
     )
 
-    if latest_posts_mode:
-        st.markdown(
-            "Парсим последние посты: извлекаем PMID из текста и картинок, "
-            "ищем в PubMed, формируем краткое содержание и теги."
-        )
-        max_items = st.number_input(
-            "Количество последних постов",
-            min_value=1,
-            max_value=20,
-            value=1,
-            help="1 = только самый свежий пост.",
-        )
-        topic = ""
-        skip_relevance = True
-        discovery_limit = 1
-    else:
-        st.markdown(
-            "Введите тему — пайплайн соберёт посты по нескольким источникам, "
-            "извлечёт исследования и выгрузит в Google Sheets."
-        )
-        topic = st.text_input(
-            "Тема запроса",
-            placeholder="например: омега-3 и деменция",
-            help="Вопрос или ключевые слова для поиска",
-        )
-        skip_relevance = st.checkbox(
-            "Пропустить фильтр релевантности (отладка)",
-            value=False,
-        )
-        search_full_profile = st.checkbox(
-            "Искать по всей странице (до 500 постов)",
-            value=True,
-        )
-        max_items_input = st.number_input(
-            "Макс. постов (если не «вся страница»)",
-            min_value=20,
-            max_value=500,
-            value=100,
-            disabled=search_full_profile,
-        )
-        discovery_limit = st.number_input(
-            "Лимит источников", min_value=1, max_value=20, value=5
-        )
-        max_items = 500 if search_full_profile else max_items_input
+    st.markdown(
+        "Парсим последние посты: извлекаем PMID из текста и картинок, "
+        "ищем в PubMed, формируем краткое содержание и теги."
+    )
+    max_items = st.number_input(
+        "Количество последних постов",
+        min_value=1,
+        max_value=20,
+        value=1,
+        help="1 = только самый свежий пост.",
+    )
 
     if st.button("Запустить", type="primary", use_container_width=True):
         if not sources_input or not sources_input.strip():
             st.error("Укажите хотя бы один блогер.")
-            return
-        if not latest_posts_mode and (not topic or not topic.strip()):
-            st.error("Введите тему запроса.")
             return
 
         pipeline = _build_pipeline()
@@ -198,12 +154,12 @@ def main() -> None:
             )
             try:
                 run_result = pipeline.run(
-                    topic=topic.strip() if topic else "",
+                    topic="",
                     sources=sources,
                     max_items=max_items,
-                    discovery_limit=discovery_limit,
-                    skip_relevance=skip_relevance,
-                    latest_posts_mode=latest_posts_mode,
+                    discovery_limit=1,
+                    skip_relevance=True,
+                    latest_posts_mode=True,
                 )
             except Exception as exc:
                 st.exception(exc)
@@ -279,7 +235,7 @@ def main() -> None:
                     st.info(
                         "Постов не получено. Проверьте имя аккаунта и APIFY_TOKEN."
                     )
-                elif latest_posts_mode:
+                else:
                     st.info(
                         "В последних постах не обнаружено PMID или исследований. "
                         "Проверьте, что пост содержит скриншоты PubMed или ссылки."
@@ -292,20 +248,19 @@ def main() -> None:
                         else:
                             st.write("**Фрагмент подписи:** (пусто)")
                         st.write(
-                            f"**Поиск по названию:** {run_result.debug_title_candidates_tried} кандидатов → "
+                            f"**Поиск по названию:** "
+                            f"{run_result.debug_title_candidates_tried} кандидатов → "
                             f"найдено PMID: {run_result.debug_pmids_from_title_search}"
                         )
-                else:
-                    st.info(
-                        "Релевантных постов с исследованиями не найдено. "
-                        "Возможно, фильтр релевантности слишком строгий или "
-                        "PMID не обнаружен в постах."
-                    )
-                    st.markdown(
-                        "**Отладка:** попробуйте включить "
-                        "«Пропустить фильтр релевантности» — если появятся "
-                        "результаты, проблема в фильтре."
-                    )
+                        if run_result.debug_first_title_candidate:
+                            st.write(
+                                "**Первый кандидат:** "
+                                f"`{run_result.debug_first_title_candidate}`"
+                            )
+                        if run_result.debug_pubmed_search_error:
+                            st.error(
+                                f"**Ошибка PubMed:** {run_result.debug_pubmed_search_error}"
+                            )
                 return
 
             appended_rows = 0
@@ -334,9 +289,11 @@ def main() -> None:
                     else item.summary
                 )
                 st.markdown(f"**Кратко:** {summary}")
-                st.markdown(f"**Теги:** {', '.join(item.tags)}")
+                st.markdown(f"**Теги:** {', '.join(item.tags) or '—'}")
                 for study in item.studies:
                     link = f"- [{study.title}]({study.pmid_url}) — PMID:{study.pmid}"
+                    if study.tags:
+                        link += f" — {', '.join(study.tags)}"
                     st.markdown(link)
 
         output_dir = Path("output")
