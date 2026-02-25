@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-APP_VERSION = "1.7"
+APP_VERSION = "1.8"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
@@ -110,30 +110,56 @@ def main() -> None:
     )
     st.title("🔬 IG Parser — Instagram → PubMed")
     st.caption(f"Версия {APP_VERSION}")
-    st.markdown(
-        "Введите тему или вопрос — пайплайн соберёт посты, извлечёт "
-        "исследования из PubMed и выгрузит в Google Sheets (если настроено)."
+
+    mode = st.radio(
+        "Режим",
+        ["Последние посты", "Поиск по теме"],
+        horizontal=True,
+        help="«Последние посты» — парсит N последних постов блогера и извлекает исследования. "
+        "«Поиск по теме» — ищет по теме по нескольким источникам.",
+    )
+    latest_posts_mode = mode == "Последние посты"
+
+    sources_input = st.text_input(
+        "Блогер(ы) (через запятую)",
+        value="dangarnernutrition",
+        placeholder="dangarnernutrition",
+        help="Instagram username без @.",
     )
 
-    topic = st.text_input(
-        "Тема запроса",
-        placeholder="например: омега-3 и деменция",
-        help="Вопрос или ключевые слова для поиска",
-    )
-
-    search_full_profile = st.checkbox(
-        "Искать по всей странице (до 500 постов)",
-        value=True,
-        help="Иначе — только последние N постов. По умолчанию включено.",
-    )
-    skip_relevance = st.checkbox(
-        "Пропустить фильтр релевантности (отладка)",
-        value=False,
-        help="Показывать все найденные исследования без проверки на тему.",
-    )
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
+    if latest_posts_mode:
+        st.markdown(
+            "Парсим последние посты: извлекаем PMID из текста и картинок, "
+            "ищем в PubMed, формируем краткое содержание и теги."
+        )
+        max_items = st.number_input(
+            "Количество последних постов",
+            min_value=1,
+            max_value=20,
+            value=1,
+            help="1 = только самый свежий пост.",
+        )
+        topic = ""
+        skip_relevance = True
+        discovery_limit = 1
+    else:
+        st.markdown(
+            "Введите тему — пайплайн соберёт посты по нескольким источникам, "
+            "извлечёт исследования и выгрузит в Google Sheets."
+        )
+        topic = st.text_input(
+            "Тема запроса",
+            placeholder="например: омега-3 и деменция",
+            help="Вопрос или ключевые слова для поиска",
+        )
+        skip_relevance = st.checkbox(
+            "Пропустить фильтр релевантности (отладка)",
+            value=False,
+        )
+        search_full_profile = st.checkbox(
+            "Искать по всей странице (до 500 постов)",
+            value=True,
+        )
         max_items_input = st.number_input(
             "Макс. постов (если не «вся страница»)",
             min_value=20,
@@ -141,20 +167,16 @@ def main() -> None:
             value=100,
             disabled=search_full_profile,
         )
-    with col2:
         discovery_limit = st.number_input(
             "Лимит источников", min_value=1, max_value=20, value=5
         )
-    with col3:
-        sources_input = st.text_input(
-            "Источники (через запятую, default: dangarnernutrition)",
-            placeholder="dangarnernutrition",
-        )
-
-    max_items = 500 if search_full_profile else max_items_input
+        max_items = 500 if search_full_profile else max_items_input
 
     if st.button("Запустить", type="primary", use_container_width=True):
-        if not topic or not topic.strip():
+        if not sources_input or not sources_input.strip():
+            st.error("Укажите хотя бы один блогер.")
+            return
+        if not latest_posts_mode and (not topic or not topic.strip()):
             st.error("Введите тему запроса.")
             return
 
@@ -162,9 +184,8 @@ def main() -> None:
         if not pipeline:
             return
 
-        if sources_input and sources_input.strip():
-            sources = [s.strip() for s in sources_input.split(",") if s.strip()]
-        else:
+        sources = [s.strip() for s in sources_input.split(",") if s.strip()]
+        if not sources:
             sources = DEFAULT_SOURCES
 
         has_sheets = bool(_get_secret("GOOGLE_SHEETS_SPREADSHEET_ID"))
@@ -177,11 +198,12 @@ def main() -> None:
             )
             try:
                 run_result = pipeline.run(
-                    topic=topic.strip(),
+                    topic=topic.strip() if topic else "",
                     sources=sources,
                     max_items=max_items,
                     discovery_limit=discovery_limit,
                     skip_relevance=skip_relevance,
+                    latest_posts_mode=latest_posts_mode,
                 )
             except Exception as exc:
                 st.exception(exc)
@@ -228,6 +250,11 @@ def main() -> None:
                 elif run_result.posts_fetched == 0:
                     st.info(
                         "Постов не получено. Проверьте имя аккаунта и APIFY_TOKEN."
+                    )
+                elif latest_posts_mode:
+                    st.info(
+                        "В последних постах не обнаружено PMID или исследований. "
+                        "Проверьте, что пост содержит скриншоты PubMed или ссылки."
                     )
                 else:
                     st.info(

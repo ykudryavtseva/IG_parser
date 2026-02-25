@@ -36,9 +36,11 @@ class EvidencePipeline:
         max_items: int,
         discovery_limit: int,
         skip_relevance: bool = False,
+        latest_posts_mode: bool = False,
     ) -> PipelineRunResult:
-        selected_sources = sources
-        if not selected_sources:
+        """Run pipeline. In latest_posts_mode: parse N newest posts from given sources, no topic filter."""
+        selected_sources = [s.strip() for s in sources if s and s.strip()]
+        if not latest_posts_mode and not selected_sources:
             selected_sources = self._instagram_client.discover_sources(
                 topic=topic,
                 discovery_limit=discovery_limit,
@@ -78,13 +80,16 @@ class EvidencePipeline:
 
         debug_stats: list[dict] = []
         results: list[PostEvidence] = []
+        use_relevance = not latest_posts_mode and not skip_relevance
+        post_topic = topic.strip() if topic else ""
+
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(
                     self._process_post,
                     post,
-                    topic,
-                    skip_relevance=skip_relevance,
+                    post_topic,
+                    skip_relevance=not use_relevance,
                     debug_stats=debug_stats,
                 ): post
                 for post in posts_to_process
@@ -215,8 +220,9 @@ class EvidencePipeline:
 
         tags = self._build_tags(topic=topic, caption=caption)
         summary = self._build_summary(post=post, caption=caption)
+        display_topic = topic or self._topic_from_caption(caption, post)
         return PostEvidence(
-            topic=topic,
+            topic=display_topic,
             summary=summary,
             tags=tags,
             studies=studies,
@@ -231,6 +237,16 @@ class EvidencePipeline:
                 post.get("commentCount") or post.get("commentsCount")
             ),
         )
+
+    @staticmethod
+    def _topic_from_caption(caption: str, post: dict) -> str:
+        """Fallback topic when none given (latest-posts mode)."""
+        if caption and caption.strip():
+            first_line = caption.strip().split("\n")[0][:80].rstrip()
+            if first_line:
+                return first_line
+        username = (post.get("owner") or {}).get("username") or post.get("ownerUsername")
+        return f"Пост {username or 'блогера'}" if username else "Последний пост"
 
     @staticmethod
     def _build_summary(post: dict, caption: str) -> str:
