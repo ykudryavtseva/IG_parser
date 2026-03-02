@@ -142,19 +142,18 @@ def main() -> None:
             else:
                 st.warning("Укажите хотя бы один аккаунт.")
 
+    spreadsheet_id = _get_secret("GOOGLE_SHEETS_SPREADSHEET_ID")
+    sheets_link = ""
+    if spreadsheet_id:
+        sheets_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
+
     st.markdown(
-        "Парсим последние посты: извлекаем PMID из текста и картинок, "
-        "ищем в PubMed, формируем краткое содержание и теги."
-    )
-    max_items = st.number_input(
-        "Количество последних постов",
-        min_value=1,
-        max_value=20,
-        value=1,
-        help="1 = только самый свежий пост.",
+        "Автоматическая выгрузка новых постов происходит ежедневно в 8:00 по МСК. "
+        "Все выгруженные данные хранятся в таблице"
+        + (f": [открыть]({sheets_link})" if sheets_link else ".") + "."
     )
 
-    if st.button("Запустить", type="primary", use_container_width=True):
+    if st.button("Выгрузить новые посты сейчас", type="primary", use_container_width=True):
         if not sources_input or not sources_input.strip():
             st.error("Укажите хотя бы один блогер.")
             return
@@ -179,7 +178,7 @@ def main() -> None:
                 run_result = pipeline.run(
                     topic="",
                     sources=sources,
-                    max_items=max_items,
+                    max_items=20,
                     discovery_limit=1,
                     skip_relevance=True,
                     latest_posts_mode=True,

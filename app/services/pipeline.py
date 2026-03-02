@@ -349,6 +349,15 @@ class EvidencePipeline:
             return None
 
         studies = self._attach_study_tags(studies=studies)
+        if len(studies) > 1:
+            primary, related = studies[0], studies[1:]
+            related_sorted = sorted(
+                related,
+                key=lambda s: s.year if s.year is not None else -1,
+                reverse=True,
+            )
+            studies = [primary] + related_sorted
+
         tags = self._post_tags_from_studies(studies) or self._build_tags(
             topic=topic, caption=caption
         )
