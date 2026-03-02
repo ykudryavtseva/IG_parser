@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-APP_VERSION = "1.9"
+APP_VERSION = "1.10"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
@@ -112,7 +112,12 @@ def main() -> None:
     st.title("🔬 IG Parser — Instagram → PubMed")
     st.caption(f"Версия {APP_VERSION}")
 
-    from app.services.sync_state import load_state, save_state
+    from app.services.sync_state import (
+        get_only_posts_newer_than,
+        load_state,
+        mark_run_complete,
+        save_state,
+    )
 
     sync_state = load_state()
     saved_accounts = sync_state.get("accounts") or DEFAULT_SOURCES
@@ -153,6 +158,8 @@ def main() -> None:
         + (f": [открыть]({sheets_link})" if sheets_link else ".") + "."
     )
 
+    results = []
+    appended_rows = 0
     if st.button("Выгрузить новые посты сейчас", type="primary", use_container_width=True):
         if not sources_input or not sources_input.strip():
             st.error("Укажите хотя бы один блогер.")
@@ -167,6 +174,8 @@ def main() -> None:
             sources = DEFAULT_SOURCES
 
         has_sheets = bool(_get_secret("GOOGLE_SHEETS_SPREADSHEET_ID"))
+        only_newer = get_only_posts_newer_than(sync_state)
+        processed = set(sync_state.get("processed_post_ids") or [])
 
         openai_ok = bool(_get_secret("OPENAI_API_KEY"))
         with st.status("Обработка…", expanded=True) as status:
@@ -182,6 +191,8 @@ def main() -> None:
                     discovery_limit=1,
                     skip_relevance=True,
                     latest_posts_mode=True,
+                    only_posts_newer_than=only_newer,
+                    processed_post_ids=processed,
                 )
             except Exception as exc:
                 st.exception(exc)
@@ -285,6 +296,10 @@ def main() -> None:
                 st.write("**2. Выгрузка в Google Sheets**")
                 appended_rows = _export_to_sheets_if_configured(items=results)
                 st.write(f"✓ Добавлено строк: {appended_rows}")
+
+            if results:
+                new_ids = [item.post_url for item in results if item.post_url]
+                mark_run_complete(sync_state, new_ids)
 
             status.update(label="Готово", state="complete")
 
