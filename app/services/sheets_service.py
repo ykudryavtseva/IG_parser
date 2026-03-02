@@ -129,6 +129,7 @@ class GoogleSheetsExporter:
     def _build_rows(self, items: list[PostEvidence]) -> list[list[str]]:
         header = [
             "Название поста",
+            "Инстаграм",
             "Ссылка на пост в инстаграм",
             "Саммари",
             "Название исследования",
@@ -141,28 +142,26 @@ class GoogleSheetsExporter:
         rows: list[list[str]] = [header]
 
         for item in items:
-            common = [
-                item.topic,
-                item.post_url or "",
-                item.summary,
-            ]
+            post_block = [item.topic, item.author_username or "", item.post_url or "", item.summary]
+            empty_post_block = ["", "", "", ""]
 
             if not item.studies:
-                rows.append(common + ["", "", "", "", "", ""])
+                rows.append(post_block + ["", "", "", "", "", ""])
                 continue
 
-            for study in item.studies:
-                rows.append(
-                    common
-                    + [
-                        study.title,
-                        self._primary_author(study=study),
-                        str(study.year) if study.year is not None else "",
-                        study.pmid_url,
-                        study.full_text_url or "",
-                        self._study_tag(item=item, study=study),
-                    ]
-                )
+            for idx, study in enumerate(item.studies):
+                study_data = [
+                    study.title,
+                    self._primary_author(study=study),
+                    str(study.year) if study.year is not None else "",
+                    study.pmid_url,
+                    study.full_text_url or "",
+                    self._study_tag(item=item, study=study),
+                ]
+                if idx == 0:
+                    rows.append(post_block + study_data)
+                else:
+                    rows.append(empty_post_block + study_data)
 
         return rows
 
