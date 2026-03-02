@@ -95,8 +95,13 @@ class ApifyInstagramClient:
         self,
         sources: list[str],
         max_items: int,
+        only_posts_newer_than: str | None = None,
     ) -> list[dict]:
-        run_input = self._build_posts_input(sources=sources, max_items=max_items)
+        run_input = self._build_posts_input(
+            sources=sources,
+            max_items=max_items,
+            only_posts_newer_than=only_posts_newer_than,
+        )
         run = self._client.actor(self._posts_actor_id).call(run_input=run_input)
         items = self._client.dataset(run["defaultDatasetId"]).list_items().items
         return [item for item in items if isinstance(item, dict)]
@@ -223,20 +228,31 @@ class ApifyInstagramClient:
             score += 1
         return score
 
-    def _build_posts_input(self, sources: list[str], max_items: int) -> dict:
+    def _build_posts_input(
+        self,
+        sources: list[str],
+        max_items: int,
+        only_posts_newer_than: str | None = None,
+    ) -> dict:
         actor_id = self._posts_actor_id.lower()
         if "instagram-scraper-api" in actor_id:
             start_urls = [self._normalize_to_url(source) for source in sources]
-            return {
+            out = {
                 "startUrls": start_urls,
                 "maxItems": max_items,
             }
+            if only_posts_newer_than:
+                out["onlyPostsNewerThan"] = only_posts_newer_than
+            return out
 
-        return {
+        out: dict = {
             "username": sources,
             "resultsLimit": max_items,
             "skipPinnedPosts": True,
         }
+        if only_posts_newer_than:
+            out["onlyPostsNewerThan"] = only_posts_newer_than
+        return out
 
     @staticmethod
     def _normalize_to_url(source: str) -> str:

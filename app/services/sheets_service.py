@@ -128,7 +128,7 @@ class GoogleSheetsExporter:
 
     def _build_rows(self, items: list[PostEvidence]) -> list[list[str]]:
         header = [
-            "Вопрос",
+            "Название поста",
             "Ссылка на пост в инстаграм",
             "Саммари",
             "Название исследования",

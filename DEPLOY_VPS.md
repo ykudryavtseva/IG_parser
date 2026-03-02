@@ -89,3 +89,25 @@ poetry run streamlit run streamlit_app.py --server.address=0.0.0.0 --server.port
 sudo ufw allow 8501
 sudo ufw status
 ```
+
+## 10. Авто-синхронизация (cron, 8:00 МСК)
+
+Посты из аккаунтов автоматически выгружаются в Google Sheets раз в сутки. Сначала сохраните аккаунты через Streamlit (кнопка «Сохранить аккаунты для мониторинга»).
+
+Добавить задание в crontab:
+
+```bash
+crontab -e
+```
+
+Строка (8:00 МСК = 5:00 UTC):
+
+```
+0 5 * * * cd /root/IG_parser && /root/.local/bin/poetry run python scripts/sync_worker.py >> /root/IG_parser/logs/sync.log 2>&1
+```
+
+Создать папку для логов:
+
+```bash
+mkdir -p /root/IG_parser/logs
+```

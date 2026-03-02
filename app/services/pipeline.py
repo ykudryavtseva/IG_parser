@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import re
@@ -15,6 +16,29 @@ POST_PROCESS_WORKERS = 12
 
 # Приоритет извлечения: 1) картинка (скриншот PubMed с title/PMID)
 # 2) текст (PMID, ссылки) 3) поиск по названию из текста (вольный пересказ блогера)
+
+AD_MARKERS = (
+    "#реклама",
+    "#ad",
+    "#ads",
+    "#партнёрство",
+    "#partnership",
+    "sponsored",
+    "paid partnership",
+)
+
+EVIDENCE_TERMS = (
+    "pmid",
+    "pubmed",
+    "position stand",
+    "issn",
+    "research",
+    "study",
+    "meta-analysis",
+    "систематический обзор",
+    "исслед",
+    "научн",
+)
 
 
 class EvidencePipeline:
@@ -40,6 +64,8 @@ class EvidencePipeline:
         discovery_limit: int,
         skip_relevance: bool = False,
         latest_posts_mode: bool = False,
+        only_posts_newer_than: str | None = None,
+        processed_post_ids: set[str] | None = None,
     ) -> PipelineRunResult:
         """Run pipeline. In latest_posts_mode: parse N newest posts from given sources, no topic filter."""
         selected_sources = [s.strip() for s in sources if s and s.strip()]
@@ -58,6 +84,7 @@ class EvidencePipeline:
         posts = self._instagram_client.fetch_posts(
             sources=selected_sources,
             max_items=max_items,
+            only_posts_newer_than=only_posts_newer_than,
         )
 
         apify_debug = self._describe_first_post(posts)
@@ -80,7 +107,19 @@ class EvidencePipeline:
                     return True
             return False
 
-        posts_to_process = [p for p in posts if _has_content(p)]
+        processed_set = processed_post_ids or set()
+        filtered = []
+        for p in posts:
+            if not _has_content(p):
+                continue
+            post_id = p.get("id") or p.get("url") or ""
+            if post_id and post_id in processed_set:
+                continue
+            if self._is_non_research_post(p):
+                continue
+            filtered.append(p)
+
+        posts_to_process = filtered
         workers = (
             1
             if latest_posts_mode
@@ -166,6 +205,17 @@ class EvidencePipeline:
                 "",
             ),
         )
+
+    def _is_non_research_post(self, post: dict) -> bool:
+        """Skip ads, sponsored posts, pure marketing."""
+        caption = (
+            (post.get("caption") or post.get("text") or post.get("captionText") or "")
+            .lower()
+        )
+        for marker in AD_MARKERS:
+            if marker.lower() in caption:
+                return True
+        return False
 
     @staticmethod
     def _describe_first_post(posts: list[dict]) -> str:

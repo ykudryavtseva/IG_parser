@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-APP_VERSION = "1.8"
+APP_VERSION = "1.9"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
@@ -112,12 +112,35 @@ def main() -> None:
     st.title("🔬 IG Parser — Instagram → PubMed")
     st.caption(f"Версия {APP_VERSION}")
 
+    from app.services.sync_state import load_state, save_state
+
+    sync_state = load_state()
+    saved_accounts = sync_state.get("accounts") or DEFAULT_SOURCES
+    if isinstance(saved_accounts, list) and saved_accounts:
+        default_sources = ", ".join(saved_accounts)
+    else:
+        default_sources = "dangarnernutrition"
+
     sources_input = st.text_input(
         "Блогер(ы) (через запятую)",
-        value="dangarnernutrition",
-        placeholder="dangarnernutrition",
-        help="Instagram username без @. Проверьте написание (например dangarnernutrition, не dangamernutrition).",
+        value=default_sources,
+        placeholder="dangarnernutrition, account2",
+        help="Instagram username без @. Используется для теста по кнопке и для авто-синхронизации (после «Сохранить»).",
     )
+
+    col_save, _ = st.columns([1, 3])
+    with col_save:
+        if st.button("Сохранить аккаунты для мониторинга"):
+            accounts = [s.strip() for s in sources_input.split(",") if s.strip()]
+            if accounts:
+                sync_state["accounts"] = accounts
+                save_state(sync_state)
+                st.success(
+                    f"Сохранено: {len(accounts)} аккаунт(ов). "
+                    "Авто-синхронизация (cron 8:00 МСК) будет использовать этот список."
+                )
+            else:
+                st.warning("Укажите хотя бы один аккаунт.")
 
     st.markdown(
         "Парсим последние посты: извлекаем PMID из текста и картинок, "
