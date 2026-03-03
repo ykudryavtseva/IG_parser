@@ -63,14 +63,15 @@ def get_only_posts_newer_than(state: dict) -> str | None:
     """
     Вернуть значение для onlyPostsNewerThan на основе last_run_at.
 
-    Если last_run_at есть — используем дату. Иначе — "1 day" для первого запуска.
+    Используем полную дату-время, чтобы не подтягивать посты из того же дня.
+    Иначе — "1 day" для первого запуска.
     """
     last = state.get("last_run_at")
     if not last:
         return "1 day"
     try:
         dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
-        return dt.strftime("%Y-%m-%d")
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     except (ValueError, TypeError):
         return "1 day"
 
