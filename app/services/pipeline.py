@@ -22,13 +22,13 @@ def _parse_post_date(value: str | None) -> datetime | None:
         return None
 
 
-def _sort_by_date_newest_first(items: list[PostEvidence]) -> list[PostEvidence]:
-    """Sort PostEvidence by published_at descending (newest first)."""
+def _sort_by_date_oldest_first(items: list[PostEvidence]) -> list[PostEvidence]:
+    """Sort PostEvidence by published_at ascending (oldest first, newest last)."""
     def _key(item: PostEvidence) -> tuple[int, float]:
         dt = _parse_post_date(item.published_at)
         return (1 if dt is None else 0, dt.timestamp() if dt else 0.0)
 
-    return sorted(items, key=_key, reverse=True)
+    return sorted(items, key=_key)
 from app.services.apify_service import ApifyInstagramClient
 from app.services.pubmed_service import PubMedClient
 from app.services.relevance_service import StudyRelevanceChecker
@@ -187,7 +187,7 @@ class EvidencePipeline:
                         "post_processing_failed: %s", e, exc_info=True
                     )
 
-        results = _sort_by_date_newest_first(results)
+        results = _sort_by_date_oldest_first(results)
 
         posts_with_caption_count = sum(
             1 for p in posts if isinstance(p, dict) and (p.get("caption") or "").strip()
@@ -666,23 +666,24 @@ class EvidencePipeline:
 
         chunks = [caption] if caption else []
 
-        first_comment = post.get("firstComment")
-        if isinstance(first_comment, dict):
-            if _is_author_comment(first_comment):
-                text = first_comment.get("text")
+        def _collect_from_comment(c: dict) -> None:
+            if _is_author_comment(c):
+                text = c.get("text")
                 if isinstance(text, str) and text.strip():
                     chunks.append(text.strip())
+            for reply in c.get("replies") or []:
+                if isinstance(reply, dict):
+                    _collect_from_comment(reply)
+
+        first_comment = post.get("firstComment")
+        if isinstance(first_comment, dict):
+            _collect_from_comment(first_comment)
 
         latest_comments = post.get("latestComments")
         if isinstance(latest_comments, list):
             for comment in latest_comments:
-                if not isinstance(comment, dict):
-                    continue
-                if not _is_author_comment(comment):
-                    continue
-                text = comment.get("text")
-                if isinstance(text, str) and text.strip():
-                    chunks.append(text.strip())
+                if isinstance(comment, dict):
+                    _collect_from_comment(comment)
 
         return "\n".join(chunks)
 
