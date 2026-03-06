@@ -3,10 +3,32 @@ import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 import httpx
 
 from app.models import PipelineRunResult, PostEvidence, ResearchItem
+
+
+def _parse_post_date(value: str | None) -> datetime | None:
+    """Parse ISO or similar date string for sorting. Returns None if unparseable."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")[:26]
+        )
+    except (ValueError, TypeError):
+        return None
+
+
+def _sort_by_date_newest_first(items: list[PostEvidence]) -> list[PostEvidence]:
+    """Sort PostEvidence by published_at descending (newest first)."""
+    def _key(item: PostEvidence) -> tuple[int, float]:
+        dt = _parse_post_date(item.published_at)
+        return (1 if dt is None else 0, dt.timestamp() if dt else 0.0)
+
+    return sorted(items, key=_key, reverse=True)
 from app.services.apify_service import ApifyInstagramClient
 from app.services.pubmed_service import PubMedClient
 from app.services.relevance_service import StudyRelevanceChecker
@@ -21,8 +43,12 @@ CITATION_PATTERN = re.compile(
     r"([A-Za-z][\w-]*)\s+et\s+al\.?,?\s*,\s*(.+?)\s+(\d{4})\b",
     re.IGNORECASE,
 )
+CITATION_PATTERN_NO_JOURNAL = re.compile(
+    r"([A-Za-z][\w-]*)\s+et\s+al\.?,?\s*,\s*(\d{4})\b(?:\s*\(([^)]+)\))?",
+    re.IGNORECASE,
+)
 CITATIONS_HEADER_PATTERN = re.compile(
-    r"^\s*citations\s*:\s*",
+    r"^\s*(?:citations|references)\s*:\s*",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -161,6 +187,8 @@ class EvidencePipeline:
                         "post_processing_failed: %s", e, exc_info=True
                     )
 
+        results = _sort_by_date_newest_first(results)
+
         posts_with_caption_count = sum(
             1 for p in posts if isinstance(p, dict) and (p.get("caption") or "").strip()
         )
@@ -297,13 +325,13 @@ class EvidencePipeline:
         pmids = sorted(set(pmids_from_text + pmids_from_images))
         if not pmids:
             author_text = self._extract_author_text_only(post=post, caption=caption)
-            citation_queries = self._parse_citation_lines(author_text)
+            citation_queries, context_queries = self._parse_citation_lines(author_text)
             caption_candidates = self._extract_title_candidates(
                 post_text=post_text,
                 caption=caption,
             )
             title_candidates = list(image_title_candidates)
-            for cq in citation_queries:
+            for cq in citation_queries + context_queries:
                 if cq not in title_candidates:
                     title_candidates.insert(0, cq)
             for t in caption_candidates:
@@ -311,7 +339,7 @@ class EvidencePipeline:
                     title_candidates.append(t)
             if debug_stats:
                 entry["caption_snippet"] = caption[:250] if caption else ""
-                entry["citation_queries"] = citation_queries
+                entry["citation_queries"] = citation_queries + context_queries
                 entry["title_candidates_count"] = len(title_candidates)
                 entry["first_title_candidate"] = (
                     title_candidates[0][:120] if title_candidates else ""
@@ -327,28 +355,15 @@ class EvidencePipeline:
             return None
 
         pmids_from_images_set = set(pmids_from_images)
+        ordered_pmids = list(dict.fromkeys(pmids))
         primary_pmid = (
-            next((p for p in pmids if p in pmids_from_images_set), None)
-            or pmids[0]
+            next((p for p in ordered_pmids if p in pmids_from_images_set), None)
+            or ordered_pmids[0]
         )
 
-        try:
-            primary_study = self._pubmed_client.fetch_study(primary_pmid)
-        except (httpx.HTTPError, KeyError, ValueError):
-            logging.getLogger(__name__).info(
-                "pubmed_fetch_failed pmid=%s", primary_pmid, exc_info=True
-            )
-            return None
-
-        related_pmids = self._pubmed_client.fetch_related_pmids(
-            pmid=primary_pmid,
-            max_results=10,
-        )
-        studies = [primary_study]
+        studies: list = []
         fetch_failed = 0
-        for pmid in related_pmids:
-            if pmid == primary_pmid:
-                continue
+        for pmid in ordered_pmids[:15]:
             try:
                 study = self._pubmed_client.fetch_study(pmid)
                 studies.append(study)
@@ -358,16 +373,39 @@ class EvidencePipeline:
                     "pubmed_fetch_failed pmid=%s", pmid, exc_info=True
                 )
 
-        if debug_stats:
-            debug_stats[-1]["pmids_attempted"] = 1 + len(related_pmids)
-            debug_stats[-1]["pmids_fetch_failed"] = fetch_failed
-
         if not studies:
             return None
 
+        if len(studies) < 3:
+            related_pmids = self._pubmed_client.fetch_related_pmids(
+                pmid=primary_pmid,
+                max_results=10,
+            )
+            seen = {s.pmid for s in studies}
+            for pmid in related_pmids:
+                if len(studies) >= 12:
+                    break
+                if pmid in seen:
+                    continue
+                try:
+                    study = self._pubmed_client.fetch_study(pmid)
+                    studies.append(study)
+                    seen.add(pmid)
+                except (httpx.HTTPError, KeyError, ValueError):
+                    fetch_failed += 1
+
+        if debug_stats:
+            debug_stats[-1]["pmids_attempted"] = len(ordered_pmids)
+            debug_stats[-1]["pmids_fetch_failed"] = fetch_failed
+
         studies = self._attach_study_tags(studies=studies)
         if len(studies) > 1:
-            primary, related = studies[0], studies[1:]
+            primary_idx = next(
+                (i for i, s in enumerate(studies) if s.pmid == primary_pmid),
+                0,
+            )
+            primary = studies[primary_idx]
+            related = [s for i, s in enumerate(studies) if i != primary_idx]
             related_sorted = sorted(
                 related,
                 key=lambda s: s.year if s.year is not None else -1,
@@ -574,24 +612,34 @@ class EvidencePipeline:
         return unique_tags
 
     @staticmethod
-    def _parse_citation_lines(text: str) -> list[str]:
+    def _parse_citation_lines(text: str) -> tuple[list[str], list[str]]:
         """
-        Extract citation lines in format "Author et al., Journal Year".
-        Returns PubMed query strings: "Author Journal Year".
+        Extract citation lines. Returns (citation_queries, context_queries).
+        citation_queries: "Author Journal Year" for search_pmids_by_citation.
+        context_queries: "Author context Year" (e.g. Hill tart cherry meta-analysis 2021)
+        for search_pmids_by_title.
         """
         if not text or not text.strip():
-            return []
-        queries: list[str] = []
+            return [], []
+        citations: list[str] = []
+        context_queries: list[str] = []
         for line in text.splitlines():
             stripped = line.strip()
             if not stripped or CITATIONS_HEADER_PATTERN.match(stripped):
                 continue
             rest = CITATIONS_HEADER_PATTERN.sub("", stripped).strip() or stripped
             for match in CITATION_PATTERN.finditer(rest):
-                q = f"{match.group(1)} {match.group(2).strip()} {match.group(3)}"
-                if q not in queries:
-                    queries.append(q)
-        return queries
+                journal = match.group(2).strip()
+                if journal and journal != match.group(3):
+                    q = f"{match.group(1)} {journal} {match.group(3)}"
+                    if q not in citations:
+                        citations.append(q)
+            for match in CITATION_PATTERN_NO_JOURNAL.finditer(rest):
+                author, year, ctx = match.group(1), match.group(2), match.group(3)
+                q = f"{author} {ctx or ''} {year}".strip() if ctx else f"{author} {year}"
+                if q not in context_queries:
+                    context_queries.append(q)
+        return (citations, context_queries)
 
     @staticmethod
     def _extract_author_text_only(post: dict, caption: str) -> str:
@@ -922,16 +970,17 @@ class EvidencePipeline:
     ) -> list[str]:
         pmids: list[str] = []
         citation_set = set(citation_queries or [])
+
         for candidate in title_candidates:
-            if pmids:
-                break
             try:
                 if candidate in citation_set:
                     matched = self._pubmed_client.search_pmids_by_citation(
                         citation_query=candidate,
-                        max_results=5,
+                        max_results=2,
                     )
                 else:
+                    if pmids:
+                        break
                     matched = self._pubmed_client.search_pmids_by_title(
                         title=candidate,
                         max_results=5,
@@ -951,6 +1000,8 @@ class EvidencePipeline:
             for pmid in matched:
                 if pmid not in pmids:
                     pmids.append(pmid)
+            if candidate not in citation_set and pmids:
+                break
         return pmids
 
     @staticmethod
