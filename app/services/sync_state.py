@@ -68,7 +68,7 @@ def get_only_posts_newer_than(state: dict) -> str | None:
     """
     last = state.get("last_run_at")
     if not last:
-        return "1 day"
+        return "7 days"
     try:
         dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")

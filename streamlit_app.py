@@ -113,7 +113,6 @@ def main() -> None:
     st.caption(f"Версия {APP_VERSION}")
 
     from app.services.sync_state import (
-        get_only_posts_newer_than,
         load_state,
         mark_run_complete,
         save_state,
@@ -174,7 +173,6 @@ def main() -> None:
             sources = DEFAULT_SOURCES
 
         has_sheets = bool(_get_secret("GOOGLE_SHEETS_SPREADSHEET_ID"))
-        only_newer = get_only_posts_newer_than(sync_state)
         processed = set(sync_state.get("processed_post_ids") or [])
 
         openai_ok = bool(_get_secret("OPENAI_API_KEY"))
@@ -191,7 +189,7 @@ def main() -> None:
                     discovery_limit=1,
                     skip_relevance=True,
                     latest_posts_mode=True,
-                    only_posts_newer_than=only_newer,
+                    only_posts_newer_than=None,
                     processed_post_ids=processed,
                 )
             except Exception as exc:

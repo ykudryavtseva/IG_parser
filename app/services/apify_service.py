@@ -100,14 +100,40 @@ class ApifyInstagramClient:
         """
         Fetch posts from Apify. Returns (posts, apify_error).
         apify_error is set when items are error objects (e.g. private account, block).
+        Retries with plain usernames if URLs return only errors.
         """
         run_input = self._build_posts_input(
             sources=sources,
             max_items=max_items,
             only_posts_newer_than=only_posts_newer_than,
+            use_profile_urls=True,
         )
+        if not run_input.get("username"):
+            return ([], "Не заданы аккаунты для выгрузки.")
+        valid, apify_error = self._run_fetch(run_input=run_input)
+
+        if not valid and apify_error and self._used_urls_in_input(run_input):
+            run_input_plain = self._build_posts_input(
+                sources=sources,
+                max_items=max_items,
+                only_posts_newer_than=only_posts_newer_than,
+                use_profile_urls=False,
+            )
+            valid, _ = self._run_fetch(run_input=run_input_plain)
+
+        return (valid, apify_error if not valid else None)
+
+    def _used_urls_in_input(self, run_input: dict) -> bool:
+        vals = run_input.get("username") or []
+        return any(
+            isinstance(v, str) and "instagram.com" in v
+            for v in (vals if isinstance(vals, list) else [vals])
+        )
+
+    def _run_fetch(self, run_input: dict) -> tuple[list[dict], str | None]:
         run = self._client.actor(self._posts_actor_id).call(run_input=run_input)
-        items = self._client.dataset(run["defaultDatasetId"]).list_items().items
+        dataset = self._client.dataset(run["defaultDatasetId"])
+        items = list(dataset.iterate_items())
 
         apify_error: str | None = None
         valid: list[dict] = []
@@ -121,7 +147,9 @@ class ApifyInstagramClient:
                     msgs = item.get("requestErrorMessages")
                     parts = [str(err)] if err else []
                     if isinstance(msgs, list) and msgs:
-                        parts.append("; ".join(str(m) for m in msgs[:3]))
+                        parts.append(
+                            "; ".join(str(m) for m in msgs[:5])
+                        )
                     apify_error = " ".join(parts) if parts else "Apify вернул ошибку"
                 continue
             valid.append(item)
@@ -255,6 +283,7 @@ class ApifyInstagramClient:
         sources: list[str],
         max_items: int,
         only_posts_newer_than: str | None = None,
+        use_profile_urls: bool = True,
     ) -> dict:
         actor_id = self._posts_actor_id.lower()
         if "instagram-scraper-api" in actor_id:
@@ -267,9 +296,14 @@ class ApifyInstagramClient:
                 out["onlyPostsNewerThan"] = only_posts_newer_than
             return out
 
-        urls = [self._to_profile_url(s) for s in sources]
+        clean = [s.strip() for s in sources if s and str(s).strip()]
+        if use_profile_urls:
+            items = [self._to_profile_url(s) for s in clean]
+        else:
+            items = [self._extract_username(s) for s in clean]
+        items = [x for x in items if x]
         out: dict = {
-            "username": urls,
+            "username": items,
             "resultsLimit": max_items,
             "skipPinnedPosts": True,
         }
