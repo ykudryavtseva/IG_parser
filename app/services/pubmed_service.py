@@ -195,6 +195,42 @@ class PubMedClient:
             return []
         return [item for item in id_list if isinstance(item, str)]
 
+    def search_pmids_by_citation(
+        self,
+        citation_query: str,
+        max_results: int = 5,
+    ) -> list[str]:
+        """
+        Search PubMed by citation string "Author Journal Year".
+        Builds query: Author[Author] AND "Journal"[Journal] AND Year[PDAT].
+        """
+        raw = citation_query.strip()
+        if not raw:
+            return []
+        match = re.match(
+            r"^([A-Za-z][\w-]*)\s+(.+?)\s+(\d{4})\s*$",
+            raw,
+        )
+        if not match:
+            return self.search_pmids_by_title(
+                title=citation_query,
+                max_results=max_results,
+            )
+        author, journal_part, year = match.group(1), match.group(2).strip(), match.group(3)
+        journal_clean = self._sanitize_title_for_query(journal_part)
+        if not journal_clean:
+            return self.search_pmids_by_title(
+                title=citation_query,
+                max_results=max_results,
+            )
+        query = f'{author}[Author] AND "{journal_clean}"[Journal] AND {year}[PDAT]'
+        with httpx.Client(timeout=20.0) as client:
+            return self._run_esearch(
+                client=client,
+                query=query,
+                max_results=max_results,
+            )
+
     @staticmethod
     def _build_token_query(cleaned_title: str) -> str:
         words = re.findall(r"[a-zA-Z0-9-]{3,}", cleaned_title.lower())

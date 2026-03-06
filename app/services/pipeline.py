@@ -17,6 +17,15 @@ POST_PROCESS_WORKERS = 12
 # Приоритет извлечения: 1) картинка (скриншот PubMed с title/PMID)
 # 2) текст (PMID, ссылки) 3) поиск по названию из текста (вольный пересказ блогера)
 
+CITATION_PATTERN = re.compile(
+    r"([A-Za-z][\w-]*)\s+et\s+al\.?,?\s*,\s*(.+?)\s+(\d{4})\b",
+    re.IGNORECASE,
+)
+CITATIONS_HEADER_PATTERN = re.compile(
+    r"^\s*citations\s*:\s*",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 AD_MARKERS = (
     "#реклама",
     "#ad",
@@ -286,22 +295,29 @@ class EvidencePipeline:
 
         pmids = sorted(set(pmids_from_text + pmids_from_images))
         if not pmids:
+            author_text = self._extract_author_text_only(post=post, caption=caption)
+            citation_queries = self._parse_citation_lines(author_text)
             caption_candidates = self._extract_title_candidates(
                 post_text=post_text,
                 caption=caption,
             )
             title_candidates = list(image_title_candidates)
+            for cq in citation_queries:
+                if cq not in title_candidates:
+                    title_candidates.insert(0, cq)
             for t in caption_candidates:
                 if t not in title_candidates:
                     title_candidates.append(t)
             if debug_stats:
                 entry["caption_snippet"] = caption[:250] if caption else ""
+                entry["citation_queries"] = citation_queries
                 entry["title_candidates_count"] = len(title_candidates)
                 entry["first_title_candidate"] = (
                     title_candidates[0][:120] if title_candidates else ""
                 )
             pmids = self._search_pmids_by_titles(
                 title_candidates=title_candidates,
+                citation_queries=citation_queries,
                 debug_out=entry if debug_stats else None,
             )
             if debug_stats:
@@ -555,6 +571,71 @@ class EvidencePipeline:
             if tag not in unique_tags:
                 unique_tags.append(tag)
         return unique_tags
+
+    @staticmethod
+    def _parse_citation_lines(text: str) -> list[str]:
+        """
+        Extract citation lines in format "Author et al., Journal Year".
+        Returns PubMed query strings: "Author Journal Year".
+        """
+        if not text or not text.strip():
+            return []
+        queries: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or CITATIONS_HEADER_PATTERN.match(stripped):
+                continue
+            rest = CITATIONS_HEADER_PATTERN.sub("", stripped).strip() or stripped
+            for match in CITATION_PATTERN.finditer(rest):
+                q = f"{match.group(1)} {match.group(2).strip()} {match.group(3)}"
+                if q not in queries:
+                    queries.append(q)
+        return queries
+
+    @staticmethod
+    def _extract_author_text_only(post: dict, caption: str) -> str:
+        """
+        Extract text only from post owner: caption + comments where username matches.
+        """
+        owner_username = (
+            (post.get("owner") or {}).get("username")
+            or post.get("ownerUsername")
+            or ""
+        )
+        owner_lower = owner_username.lower() if owner_username else ""
+
+        def _commenter_username(comment: dict) -> str:
+            owner = comment.get("owner")
+            if isinstance(owner, dict):
+                return (owner.get("username") or "").lower()
+            return (comment.get("ownerUsername") or comment.get("username") or "").lower()
+
+        def _is_author_comment(comment: dict) -> bool:
+            if not owner_lower:
+                return False
+            return _commenter_username(comment) == owner_lower
+
+        chunks = [caption] if caption else []
+
+        first_comment = post.get("firstComment")
+        if isinstance(first_comment, dict):
+            if _is_author_comment(first_comment):
+                text = first_comment.get("text")
+                if isinstance(text, str) and text.strip():
+                    chunks.append(text.strip())
+
+        latest_comments = post.get("latestComments")
+        if isinstance(latest_comments, list):
+            for comment in latest_comments:
+                if not isinstance(comment, dict):
+                    continue
+                if not _is_author_comment(comment):
+                    continue
+                text = comment.get("text")
+                if isinstance(text, str) and text.strip():
+                    chunks.append(text.strip())
+
+        return "\n".join(chunks)
 
     @staticmethod
     def _extract_post_text(post: dict, caption: str) -> str:
@@ -835,17 +916,25 @@ class EvidencePipeline:
     def _search_pmids_by_titles(
         self,
         title_candidates: list[str],
+        citation_queries: list[str] | None = None,
         debug_out: dict | None = None,
     ) -> list[str]:
         pmids: list[str] = []
+        citation_set = set(citation_queries or [])
         for candidate in title_candidates:
             if pmids:
                 break
             try:
-                matched = self._pubmed_client.search_pmids_by_title(
-                    title=candidate,
-                    max_results=5,
-                )
+                if candidate in citation_set:
+                    matched = self._pubmed_client.search_pmids_by_citation(
+                        citation_query=candidate,
+                        max_results=5,
+                    )
+                else:
+                    matched = self._pubmed_client.search_pmids_by_title(
+                        title=candidate,
+                        max_results=5,
+                    )
             except httpx.HTTPError as e:
                 if debug_out is not None and "pubmed_error" not in debug_out:
                     debug_out["pubmed_error"] = (
