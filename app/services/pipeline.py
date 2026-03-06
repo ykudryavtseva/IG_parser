@@ -51,6 +51,8 @@ CITATIONS_HEADER_PATTERN = re.compile(
     r"^\s*(?:citations|references)\s*:\s*",
     re.IGNORECASE | re.MULTILINE,
 )
+# Strip bullets, dashes, numbered items before citation matching
+CITATION_LINE_PREFIX = re.compile(r"^[\s\u2022\u2023\u25E6\-\*\d.]+\s*", re.UNICODE)
 
 AD_MARKERS = (
     "#реклама",
@@ -363,7 +365,7 @@ class EvidencePipeline:
 
         studies: list = []
         fetch_failed = 0
-        for pmid in ordered_pmids[:15]:
+        for pmid in ordered_pmids[:25]:
             try:
                 study = self._pubmed_client.fetch_study(pmid)
                 studies.append(study)
@@ -628,6 +630,7 @@ class EvidencePipeline:
             if not stripped or CITATIONS_HEADER_PATTERN.match(stripped):
                 continue
             rest = CITATIONS_HEADER_PATTERN.sub("", stripped).strip() or stripped
+            rest = CITATION_LINE_PREFIX.sub("", rest).strip() or rest
             for match in CITATION_PATTERN.finditer(rest):
                 journal = match.group(2).strip()
                 if journal and journal != match.group(3):
@@ -977,8 +980,13 @@ class EvidencePipeline:
                 if candidate in citation_set:
                     matched = self._pubmed_client.search_pmids_by_citation(
                         citation_query=candidate,
-                        max_results=2,
+                        max_results=3,
                     )
+                    if not matched:
+                        matched = self._pubmed_client.search_pmids_by_title(
+                            title=candidate,
+                            max_results=3,
+                        )
                 else:
                     if pmids:
                         break
