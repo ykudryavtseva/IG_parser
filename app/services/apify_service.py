@@ -267,9 +267,9 @@ class ApifyInstagramClient:
                 out["onlyPostsNewerThan"] = only_posts_newer_than
             return out
 
-        usernames = [self._extract_username(s) for s in sources]
+        urls = [self._to_profile_url(s) for s in sources]
         out: dict = {
-            "username": usernames,
+            "username": urls,
             "resultsLimit": max_items,
             "skipPinnedPosts": True,
         }
@@ -284,6 +284,13 @@ class ApifyInstagramClient:
         if "/" in s and ("instagram.com" in s or "instagr.am" in s):
             return s.split("/")[-1] or s
         return s
+
+    @staticmethod
+    def _to_profile_url(source: str) -> str:
+        """Convert source to Instagram profile URL for Apify input."""
+        return ApifyInstagramClient._normalize_to_url(
+            ApifyInstagramClient._extract_username(source)
+        )
 
     @staticmethod
     def _normalize_to_url(source: str) -> str:
