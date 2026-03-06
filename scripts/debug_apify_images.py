@@ -37,8 +37,10 @@ def main() -> None:
     )
 
     print("1. Загрузка постов из Apify...")
-    posts = client.fetch_posts(sources=[SOURCE], max_items=MAX_POSTS)
+    posts, apify_error = client.fetch_posts(sources=[SOURCE], max_items=MAX_POSTS)
     print(f"   Получено постов: {len(posts)}")
+    if apify_error:
+        print(f"   Ошибка Apify: {apify_error}")
 
     if not posts:
         print("   Постов нет. Проверь SOURCE и APIFY_TOKEN.")

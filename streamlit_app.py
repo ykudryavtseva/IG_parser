@@ -260,9 +260,12 @@ def main() -> None:
                         "но ни у одного нет подписи. Проверьте имя аккаунта."
                     )
                 elif run_result.posts_fetched == 0:
-                    st.info(
-                        "Постов не получено. Проверьте имя аккаунта и APIFY_TOKEN."
-                    )
+                    msg = "Постов не получено. Проверьте имя аккаунта и APIFY_TOKEN."
+                    if run_result.debug_apify_error:
+                        st.error(
+                            f"**Ошибка Apify:** {run_result.debug_apify_error}"
+                        )
+                    st.info(msg)
                 else:
                     st.info(
                         "В последних постах не обнаружено PMID или исследований. "

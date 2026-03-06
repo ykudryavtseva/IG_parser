@@ -45,3 +45,4 @@ class PipelineRunResult(BaseModel):
     debug_pmids_from_title_search: int = 0
     debug_pubmed_search_error: str = ""
     debug_first_title_candidate: str = ""
+    debug_apify_error: str = ""

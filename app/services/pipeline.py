@@ -90,7 +90,7 @@ class EvidencePipeline:
                 posts_with_caption=0,
             )
 
-        posts = self._instagram_client.fetch_posts(
+        posts, apify_error = self._instagram_client.fetch_posts(
             sources=selected_sources,
             max_items=max_items,
             only_posts_newer_than=only_posts_newer_than,
@@ -213,6 +213,7 @@ class EvidencePipeline:
                 ),
                 "",
             ),
+            debug_apify_error=apify_error or "",
         )
 
     def _is_non_research_post(self, post: dict) -> bool:

@@ -96,7 +96,11 @@ class ApifyInstagramClient:
         sources: list[str],
         max_items: int,
         only_posts_newer_than: str | None = None,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], str | None]:
+        """
+        Fetch posts from Apify. Returns (posts, apify_error).
+        apify_error is set when items are error objects (e.g. private account, block).
+        """
         run_input = self._build_posts_input(
             sources=sources,
             max_items=max_items,
@@ -104,7 +108,25 @@ class ApifyInstagramClient:
         )
         run = self._client.actor(self._posts_actor_id).call(run_input=run_input)
         items = self._client.dataset(run["defaultDatasetId"]).list_items().items
-        return [item for item in items if isinstance(item, dict)]
+
+        apify_error: str | None = None
+        valid: list[dict] = []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("error") or item.get("errorDescription"):
+                if apify_error is None:
+                    err = item.get("errorDescription") or item.get("error")
+                    msgs = item.get("requestErrorMessages")
+                    parts = [str(err)] if err else []
+                    if isinstance(msgs, list) and msgs:
+                        parts.append("; ".join(str(m) for m in msgs[:3]))
+                    apify_error = " ".join(parts) if parts else "Apify вернул ошибку"
+                continue
+            valid.append(item)
+
+        return (valid, apify_error)
 
     def discover_sources(self, topic: str, discovery_limit: int) -> list[str]:
         query = self._build_search_query(topic=topic)
@@ -245,14 +267,23 @@ class ApifyInstagramClient:
                 out["onlyPostsNewerThan"] = only_posts_newer_than
             return out
 
+        usernames = [self._extract_username(s) for s in sources]
         out: dict = {
-            "username": sources,
+            "username": usernames,
             "resultsLimit": max_items,
             "skipPinnedPosts": True,
         }
         if only_posts_newer_than:
             out["onlyPostsNewerThan"] = only_posts_newer_than
         return out
+
+    @staticmethod
+    def _extract_username(source: str) -> str:
+        """Extract Instagram username from URL or return as-is if already a handle."""
+        s = source.strip().rstrip("/")
+        if "/" in s and ("instagram.com" in s or "instagr.am" in s):
+            return s.split("/")[-1] or s
+        return s
 
     @staticmethod
     def _normalize_to_url(source: str) -> str:
