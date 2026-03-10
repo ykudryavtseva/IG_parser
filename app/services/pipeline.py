@@ -33,7 +33,7 @@ from app.services.apify_service import ApifyInstagramClient
 from app.services.pubmed_service import PubMedClient
 from app.services.relevance_service import StudyRelevanceChecker
 
-MAX_IMAGE_URLS_TO_SCAN = 5
+MAX_IMAGE_URLS_TO_SCAN = 8
 POST_PROCESS_WORKERS = 12
 
 # Приоритет извлечения: 1) картинка (скриншот PubMed с title/PMID)
@@ -41,6 +41,11 @@ POST_PROCESS_WORKERS = 12
 
 CITATION_PATTERN = re.compile(
     r"([A-Za-z][\w-]*)\s+et\s+al\.?,?\s*,\s*(.+?)\s+(\d{4})\b",
+    re.IGNORECASE,
+)
+# "Author et al., Journal, Year" — comma before year (e.g. Li et al., Nat Med, 2026)
+CITATION_PATTERN_COMMA_YEAR = re.compile(
+    r"([A-Za-z][\w-]*)\s+et\s+al\.?,?\s*,\s*([^,]+),\s*(\d{4})\b",
     re.IGNORECASE,
 )
 CITATION_PATTERN_NO_JOURNAL = re.compile(
@@ -632,8 +637,14 @@ class EvidencePipeline:
             rest = CITATIONS_HEADER_PATTERN.sub("", stripped).strip() or stripped
             rest = CITATION_LINE_PREFIX.sub("", rest).strip() or rest
             for match in CITATION_PATTERN.finditer(rest):
-                journal = match.group(2).strip()
+                journal = match.group(2).strip().rstrip(",")
                 if journal and journal != match.group(3):
+                    q = f"{match.group(1)} {journal} {match.group(3)}"
+                    if q not in citations:
+                        citations.append(q)
+            for match in CITATION_PATTERN_COMMA_YEAR.finditer(rest):
+                journal = match.group(2).strip().rstrip(",")
+                if journal:
                     q = f"{match.group(1)} {journal} {match.group(3)}"
                     if q not in citations:
                         citations.append(q)
@@ -669,6 +680,15 @@ class EvidencePipeline:
 
         chunks = [caption] if caption else []
 
+        for child in post.get("childPosts") or []:
+            if not isinstance(child, dict):
+                continue
+            for key in ("caption", "captionText", "text"):
+                val = child.get(key)
+                if isinstance(val, str) and val.strip():
+                    chunks.append(val.strip())
+                    break
+
         def _collect_from_comment(c: dict) -> None:
             if _is_author_comment(c):
                 text = c.get("text")
@@ -692,7 +712,16 @@ class EvidencePipeline:
 
     @staticmethod
     def _extract_post_text(post: dict, caption: str) -> str:
-        chunks = [caption]
+        chunks = [caption] if caption else []
+
+        for child in post.get("childPosts") or []:
+            if not isinstance(child, dict):
+                continue
+            for key in ("caption", "captionText", "text"):
+                val = child.get(key)
+                if isinstance(val, str) and val.strip():
+                    chunks.append(val.strip())
+                    break
 
         first_comment = post.get("firstComment")
         if isinstance(first_comment, str) and first_comment.strip():
@@ -806,8 +835,9 @@ class EvidencePipeline:
             "всё равно извлеки точное название статьи (title), мы поищем её в PubMed. "
             "PMID — число 5-8 цифр (в URL, под надписью PMID, в тексте). "
             "Скриншот PubMed/NCBI: абстракт, авторы, NCBI. "
-            "Извлеки ВСЕ похожие на PMID числа и название статьи. "
-            "Верни JSON: {\"pmids\": [\"12345678\"], \"title\": \"Full article title\"}. "
+            "Если видишь список цитат (References, Author et al., Journal Year) — извлеки КАЖДУЮ как title в массив titles. "
+            "Извлеки ВСЕ похожие на PMID числа и названия/цитаты. "
+            "Верни JSON: {\"pmids\": [\"12345678\"], \"title\": \"...\", \"titles\": [\"Author Journal Year\", ...]}. "
             + topic_hint
             + " "
             "Не скриншот статьи — {\"pmids\": [], \"title\": \"\"}."
