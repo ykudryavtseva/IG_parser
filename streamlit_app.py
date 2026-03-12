@@ -7,13 +7,12 @@ import os
 from pathlib import Path
 
 import streamlit as st
-from streamlit.errors import StreamlitSecretNotFoundError
-
 from dotenv import load_dotenv
+from streamlit.errors import StreamlitSecretNotFoundError
 
 load_dotenv()
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.4.0"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
@@ -34,19 +33,16 @@ def _build_pipeline():
     """Build pipeline from env/secrets."""
     apify_token = _get_secret("APIFY_TOKEN")
     if not apify_token:
-        st.error(
-            "APIFY_TOKEN не задан. Добавьте в .env (локально) или в Secrets."
-        )
+        st.error("APIFY_TOKEN не задан. Добавьте в .env (локально) или в Secrets.")
         return None
 
     from app.services.apify_service import ApifyInstagramClient
     from app.services.pipeline import EvidencePipeline
     from app.services.pubmed_service import PubMedClient
     from app.services.relevance_service import StudyRelevanceChecker
+    from app.services.transcription_service import WhisperTranscriptionService
 
-    posts_actor_id = _get_secret(
-        "APIFY_ACTOR_ID", "apify/instagram-post-scraper"
-    )
+    posts_actor_id = _get_secret("APIFY_ACTOR_ID", "apify/instagram-post-scraper")
     search_actor_id = _get_secret(
         "APIFY_SEARCH_ACTOR_ID", "apify/instagram-search-scraper"
     )
@@ -65,12 +61,14 @@ def _build_pipeline():
         openai_api_key=openai_api_key,
         openai_model=openai_model,
     )
+    transcription = WhisperTranscriptionService(api_key=openai_api_key)
     pipeline = EvidencePipeline(
         instagram_client=instagram_client,
         pubmed_client=pubmed_client,
         relevance_checker=relevance_checker,
         openai_api_key=openai_api_key,
         openai_model=openai_model,
+        transcription_service=transcription,
     )
     return pipeline
 
@@ -154,12 +152,15 @@ def main() -> None:
     st.markdown(
         "Автоматическая выгрузка новых постов происходит ежедневно в 8:00 по МСК. "
         "Все выгруженные данные хранятся в таблице"
-        + (f": [открыть]({sheets_link})" if sheets_link else ".") + "."
+        + (f": [открыть]({sheets_link})" if sheets_link else ".")
+        + "."
     )
 
     results = []
     appended_rows = 0
-    if st.button("Выгрузить новые посты сейчас", type="primary", use_container_width=True):
+    if st.button(
+        "Выгрузить новые посты сейчас", type="primary", use_container_width=True
+    ):
         if not sources_input or not sources_input.strip():
             st.error("Укажите хотя бы один блогер.")
             return
@@ -201,7 +202,9 @@ def main() -> None:
                 f"с подписями: {run_result.posts_with_caption}"
             )
             if run_result.debug_apify_first_post:
-                with st.expander("Формат Apify (структура первого поста)", expanded=True):
+                with st.expander(
+                    "Формат Apify (структура первого поста)", expanded=True
+                ):
                     st.code(run_result.debug_apify_first_post)
             st.write(
                 f"URL картинок извлечено: {run_result.debug_total_image_urls}, "
@@ -219,11 +222,20 @@ def main() -> None:
                     st.write(f"Статус: `{run_result.debug_sample_status}`")
 
             has_images = run_result.debug_posts_with_images > 0
-            all_failed = run_result.debug_images_failed > 0 and run_result.debug_images_fetched == 0
+            all_failed = (
+                run_result.debug_images_failed > 0
+                and run_result.debug_images_fetched == 0
+            )
             sample_status = run_result.debug_sample_status
-            cdn_blocked = has_images and all_failed and sample_status in ("403", "429", "401")
+            cdn_blocked = (
+                has_images and all_failed and sample_status in ("403", "429", "401")
+            )
             no_key_for_images = sample_status == "no_openai_key"
-            no_attempt = has_images and run_result.debug_images_fetched == 0 and run_result.debug_images_failed == 0
+            no_attempt = (
+                has_images
+                and run_result.debug_images_fetched == 0
+                and run_result.debug_images_failed == 0
+            )
             if no_key_for_images:
                 st.warning(
                     "⚠ **Картинки не обрабатываются:** OPENAI_API_KEY не передан в пайплайн. "
@@ -260,9 +272,7 @@ def main() -> None:
                 elif run_result.posts_fetched == 0:
                     msg = "Постов не получено. Проверьте имя аккаунта и APIFY_TOKEN."
                     if run_result.debug_apify_error:
-                        st.error(
-                            f"**Ошибка Apify:** {run_result.debug_apify_error}"
-                        )
+                        st.error(f"**Ошибка Apify:** {run_result.debug_apify_error}")
                     st.info(msg)
                 else:
                     st.info(
@@ -308,10 +318,14 @@ def main() -> None:
             spreadsheet_id = _get_secret("GOOGLE_SHEETS_SPREADSHEET_ID")
             if spreadsheet_id:
                 sheets_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
-                st.markdown(f"📊 **Выгрузка в Google Sheets:** [открыть таблицу]({sheets_url})")
+                st.markdown(
+                    f"📊 **Выгрузка в Google Sheets:** [открыть таблицу]({sheets_url})"
+                )
 
         for item in results:
-            label = f"📌 {item.author_username or '—'} | {len(item.studies)} исследований"
+            label = (
+                f"📌 {item.author_username or '—'} | {len(item.studies)} исследований"
+            )
             with st.expander(label):
                 st.markdown(f"**Тема:** {item.topic}")
                 if item.post_url:

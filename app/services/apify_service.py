@@ -147,9 +147,7 @@ class ApifyInstagramClient:
                     msgs = item.get("requestErrorMessages")
                     parts = [str(err)] if err else []
                     if isinstance(msgs, list) and msgs:
-                        parts.append(
-                            "; ".join(str(m) for m in msgs[:5])
-                        )
+                        parts.append("; ".join(str(m) for m in msgs[:5]))
                     apify_error = " ".join(parts) if parts else "Apify вернул ошибку"
                 continue
             valid.append(item)
@@ -211,10 +209,7 @@ class ApifyInstagramClient:
 
     @staticmethod
     def _topic_terms(topic: str) -> list[str]:
-        words = [
-            word.strip("?!.:,;()[]{}\"'").lower()
-            for word in topic.split()
-        ]
+        words = [word.strip("?!.:,;()[]{}\"'").lower() for word in topic.split()]
         terms: list[str] = []
         for word in words:
             if len(word) < 4:

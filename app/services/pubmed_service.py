@@ -74,7 +74,9 @@ class PubMedClient:
 
         result = summary_data.get("result", {}).get(pmid)
         if not isinstance(result, dict) or result.get("error"):
-            err_msg = result.get("error", "not found") if isinstance(result, dict) else ""
+            err_msg = (
+                result.get("error", "not found") if isinstance(result, dict) else ""
+            )
             raise ValueError(f"PMID {pmid} not found in PubMed: {err_msg}")
         authors = [author["name"] for author in result.get("authors", [])]
         year = self._extract_year(result.get("pubdate", ""))
@@ -143,8 +145,8 @@ class PubMedClient:
             return []
 
         query_candidates = [
-            f"\"{cleaned_title}\"[Title]",
-            f"\"{cleaned_title}\"[Title/Abstract]",
+            f'"{cleaned_title}"[Title]',
+            f'"{cleaned_title}"[Title/Abstract]',
         ]
         if "position stand" in raw.lower() and "antioxidant" in raw.lower():
             query_candidates.insert(
@@ -216,7 +218,11 @@ class PubMedClient:
                 title=citation_query,
                 max_results=max_results,
             )
-        author, journal_part, year = match.group(1), match.group(2).strip(), match.group(3)
+        author, journal_part, year = (
+            match.group(1),
+            match.group(2).strip(),
+            match.group(3),
+        )
         journal_clean = self._sanitize_title_for_query(journal_part)
         if not journal_clean:
             return self.search_pmids_by_title(

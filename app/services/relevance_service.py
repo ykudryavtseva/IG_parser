@@ -158,7 +158,7 @@ class StudyRelevanceChecker:
                     "role": "system",
                     "content": (
                         "Ты фильтр релевантности. Отвечай JSON: "
-                        "{\"relevant\": true|false}. "
+                        '{"relevant": true|false}. '
                         "relevant=true если исследование связано с темой: "
                         "напрямую, через родственные термины (андрогены↔тестостерон, "
                         "витамин D↔кальцидиол) или как главный объект изучения. "
@@ -234,8 +234,7 @@ class StudyRelevanceChecker:
             return True
 
         group_hits = [
-            any(signal in title_low for signal in signals)
-            for signals in matched_groups
+            any(signal in title_low for signal in signals) for signals in matched_groups
         ]
         unique_group_count = len({tuple(group) for group in matched_groups})
         if unique_group_count >= 2:

@@ -10,6 +10,7 @@ class ResearchItem(BaseModel):
     full_text_url: str | None = None
     abstract: str | None = None
     tags: list[str] = Field(default_factory=list)
+    citation_source: str | None = None
 
 
 class PostEvidence(BaseModel):
@@ -22,6 +23,10 @@ class PostEvidence(BaseModel):
     published_at: str | None = None
     likes: int | None = None
     comments: int | None = None
+    content_type: str | None = None
+    caption: str | None = None
+    image_url: str | None = None
+    transcript: str | None = None
 
 
 class PipelineRunResult(BaseModel):

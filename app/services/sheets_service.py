@@ -87,15 +87,20 @@ class GoogleSheetsExporter:
                     pass
 
     def _ensure_header_row(self, header: list[str]) -> None:
-        response = self._service.spreadsheets().values().get(
-            spreadsheetId=self._spreadsheet_id,
-            range=f"{self._worksheet_name}!1:1",
-        ).execute()
+        response = (
+            self._service.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=self._spreadsheet_id,
+                range=f"{self._worksheet_name}!1:1",
+            )
+            .execute()
+        )
         values = response.get("values", [])
         if values:
             existing_header = values[0]
             if existing_header != header:
-                # Header schema changed; reset worksheet so row mapping stays stable.
+                # Header changed; reset worksheet for stable row mapping.
                 self._service.spreadsheets().values().clear(
                     spreadsheetId=self._spreadsheet_id,
                     range=self._worksheet_name,
@@ -112,10 +117,14 @@ class GoogleSheetsExporter:
         ).execute()
 
     def _resolve_worksheet_name(self, requested_name: str) -> str:
-        metadata = self._service.spreadsheets().get(
-            spreadsheetId=self._spreadsheet_id,
-            fields="sheets.properties.title",
-        ).execute()
+        metadata = (
+            self._service.spreadsheets()
+            .get(
+                spreadsheetId=self._spreadsheet_id,
+                fields="sheets.properties.title",
+            )
+            .execute()
+        )
         titles = [
             sheet.get("properties", {}).get("title", "")
             for sheet in metadata.get("sheets", [])
@@ -130,7 +139,12 @@ class GoogleSheetsExporter:
         header = [
             "Название поста",
             "Инстаграм",
+            "Дата публикации",
             "Ссылка на пост в инстаграм",
+            "Тип контента",
+            "Описание",
+            "Картинка",
+            "Транскрипт",
             "Саммари",
             "Название исследования",
             "Автор",
@@ -138,15 +152,28 @@ class GoogleSheetsExporter:
             "Ссылка на исследование PMID",
             "Ссылка на полный текст исследования",
             "Тег по смыслу исследования",
+            "Источник цитаты",
         ]
         rows: list[list[str]] = [header]
+        post_cols_count = 9
+        study_cols_count = 7
+        empty_post_block = [""] * post_cols_count
 
         for item in items:
-            post_block = [item.topic, item.author_username or "", item.post_url or "", item.summary]
-            empty_post_block = ["", "", "", ""]
+            post_block = [
+                item.topic,
+                item.author_username or "",
+                item.published_at or "",
+                item.post_url or "",
+                item.content_type or "",
+                item.caption or "",
+                item.image_url or "",
+                item.transcript or "",
+                item.summary,
+            ]
 
             if not item.studies:
-                rows.append(post_block + ["", "", "", "", "", ""])
+                rows.append(post_block + [""] * study_cols_count)
                 continue
 
             for idx, study in enumerate(item.studies):
@@ -157,6 +184,7 @@ class GoogleSheetsExporter:
                     study.pmid_url,
                     study.full_text_url or "",
                     self._study_tag(item=item, study=study),
+                    study.citation_source or "",
                 ]
                 if idx == 0:
                     rows.append(post_block + study_data)
@@ -225,7 +253,7 @@ class GoogleSheetsExporter:
             "Прочитай статью и выбери 3–4 главных тега (ключевых слова), "
             "которые описывают её содержание. Теги: короткие (1–3 слова), "
             "на том же языке, что и статья. "
-            "Верни только JSON: {\"tags\": [\"тег1\", \"тег2\", \"тег3\", \"тег4\"]}.\n\n"
+            'Верни только JSON: {"tags": ["тег1", "тег2", "тег3"]}.\n\n'
             f"Статья:\n{article_text}"
         )
 

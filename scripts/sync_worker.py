@@ -45,9 +45,12 @@ def main() -> int:
     from app.services.pipeline import EvidencePipeline
     from app.services.pubmed_service import PubMedClient
     from app.services.relevance_service import StudyRelevanceChecker
+    from app.services.transcription_service import WhisperTranscriptionService
 
     posts_actor_id = _get_env("APIFY_ACTOR_ID", "apify/instagram-post-scraper")
-    search_actor_id = _get_env("APIFY_SEARCH_ACTOR_ID", "apify/instagram-search-scraper")
+    search_actor_id = _get_env(
+        "APIFY_SEARCH_ACTOR_ID", "apify/instagram-search-scraper"
+    )
     ncbi_tool = _get_env("NCBI_TOOL", "ig-parser-mvp")
     ncbi_email = _get_env("NCBI_EMAIL")
     openai_api_key = _get_env("OPENAI_API_KEY")
@@ -63,12 +66,14 @@ def main() -> int:
         openai_api_key=openai_api_key,
         openai_model=openai_model,
     )
+    transcription_service = WhisperTranscriptionService(api_key=openai_api_key)
     pipeline = EvidencePipeline(
         instagram_client=instagram_client,
         pubmed_client=pubmed_client,
         relevance_checker=relevance_checker,
         openai_api_key=openai_api_key,
         openai_model=openai_model,
+        transcription_service=transcription_service,
     )
 
     only_newer = get_only_posts_newer_than(state)

@@ -15,23 +15,25 @@ def _parse_post_date(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(
-            str(value).replace("Z", "+00:00")[:26]
-        )
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")[:26])
     except (ValueError, TypeError):
         return None
 
 
 def _sort_by_date_oldest_first(items: list[PostEvidence]) -> list[PostEvidence]:
     """Sort PostEvidence by published_at ascending (oldest first, newest last)."""
+
     def _key(item: PostEvidence) -> tuple[int, float]:
         dt = _parse_post_date(item.published_at)
         return (1 if dt is None else 0, dt.timestamp() if dt else 0.0)
 
     return sorted(items, key=_key)
+
+
 from app.services.apify_service import ApifyInstagramClient
 from app.services.pubmed_service import PubMedClient
 from app.services.relevance_service import StudyRelevanceChecker
+from app.services.transcription_service import TranscriptionProvider
 
 MAX_IMAGE_URLS_TO_SCAN = 8
 POST_PROCESS_WORKERS = 12
@@ -91,12 +93,14 @@ class EvidencePipeline:
         relevance_checker: StudyRelevanceChecker,
         openai_api_key: str | None = None,
         openai_model: str = "gpt-4o-mini",
+        transcription_service: TranscriptionProvider | None = None,
     ) -> None:
         self._instagram_client = instagram_client
         self._pubmed_client = pubmed_client
         self._relevance_checker = relevance_checker
         self._openai_api_key = openai_api_key
         self._openai_model = openai_model
+        self._transcription_service = transcription_service
 
     def run(
         self,
@@ -138,13 +142,28 @@ class EvidencePipeline:
                 return True
             if any(
                 post.get(k)
-                for k in ("displayUrl", "imageUrl", "image", "mediaUrl", "images")
+                for k in (
+                    "displayUrl",
+                    "imageUrl",
+                    "image",
+                    "mediaUrl",
+                    "images",
+                    "videoUrl",
+                )
             ):
                 return True
             for child in post.get("childPosts") or []:
-                if isinstance(child, dict) and any(
+                if not isinstance(child, dict):
+                    continue
+                if any(
                     child.get(k)
-                    for k in ("displayUrl", "imageUrl", "image", "images")
+                    for k in (
+                        "displayUrl",
+                        "imageUrl",
+                        "image",
+                        "images",
+                        "videoUrl",
+                    )
                 ):
                     return True
             return False
@@ -206,18 +225,12 @@ class EvidencePipeline:
         pmids_fetch_failed = sum(s.get("pmids_fetch_failed", 0) for s in debug_stats)
         images_fetched = sum(s.get("images_fetched", 0) for s in debug_stats)
         images_failed = sum(s.get("images_failed", 0) for s in debug_stats)
-        sample_entry = next(
-            (s for s in debug_stats if s.get("sample_url")), {}
-        )
-        caption_entry = next(
-            (s for s in debug_stats if s.get("caption_snippet")), {}
-        )
+        sample_entry = next((s for s in debug_stats if s.get("sample_url")), {})
+        caption_entry = next((s for s in debug_stats if s.get("caption_snippet")), {})
         title_candidates_total = sum(
             s.get("title_candidates_count", 0) for s in debug_stats
         )
-        pmids_from_title_total = sum(
-            s.get("pmids_from_title", 0) for s in debug_stats
-        )
+        pmids_from_title_total = sum(s.get("pmids_from_title", 0) for s in debug_stats)
         pubmed_error = next(
             (s.get("pubmed_error") for s in debug_stats if s.get("pubmed_error")),
             "",
@@ -254,9 +267,8 @@ class EvidencePipeline:
     def _is_non_research_post(self, post: dict) -> bool:
         """Skip ads, sponsored posts, pure marketing."""
         caption = (
-            (post.get("caption") or post.get("text") or post.get("captionText") or "")
-            .lower()
-        )
+            post.get("caption") or post.get("text") or post.get("captionText") or ""
+        ).lower()
         for marker in AD_MARKERS:
             if marker.lower() in caption:
                 return True
@@ -297,11 +309,22 @@ class EvidencePipeline:
     ) -> PostEvidence | None:
         post_url = post.get("url") or "<no-url>"
         caption = (
-            (post.get("caption") or post.get("text") or post.get("captionText") or "")
-            .strip()
-        )
+            post.get("caption") or post.get("text") or post.get("captionText") or ""
+        ).strip()
 
         post_text = self._extract_post_text(post=post, caption=caption)
+        transcript: str | None = None
+        pmids_from_transcript: list[str] = []
+        video_url = self._extract_video_url(post=post)
+        if (
+            video_url
+            and self._transcription_service
+            and self._detect_content_type(post=post) == "reel"
+        ):
+            transcript = self._transcription_service.transcribe(video_url)
+            if transcript:
+                post_text = f"{post_text}\n\n{transcript}".strip()
+                pmids_from_transcript = self._pubmed_client.extract_pmids(transcript)
         pmids_from_text = self._pubmed_client.extract_pmids(post_text)
 
         image_urls = self._extract_post_image_urls(post=post)
@@ -329,7 +352,7 @@ class EvidencePipeline:
             if debug_stats:
                 entry["pmids_images"] = len(pmids_from_images)
 
-        pmids = sorted(set(pmids_from_text + pmids_from_images))
+        pmids = sorted(set(pmids_from_text + pmids_from_transcript + pmids_from_images))
         if not pmids:
             author_text = self._extract_author_text_only(post=post, caption=caption)
             citation_queries, context_queries = self._parse_citation_lines(author_text)
@@ -358,7 +381,36 @@ class EvidencePipeline:
             )
             if debug_stats:
                 entry["pmids_from_title"] = len(pmids)
+        content_type = self._detect_content_type(post=post)
+        image_url = self._get_first_image_url(post=post) or (
+            image_urls[0] if image_urls else None
+        )
+        has_media = bool(
+            post.get("displayUrl") or post.get("imageUrl") or post.get("childPosts")
+        )
+        raw_content = bool(caption or has_media or transcript)
         if not pmids:
+            if raw_content:
+                tags_raw = self._build_tags(topic=topic, caption=caption)
+                summary_raw = self._build_summary(
+                    post=post, caption=caption, transcript=transcript
+                )
+                return PostEvidence(
+                    topic=self._topic_from_caption(caption, post),
+                    summary=summary_raw,
+                    tags=tags_raw,
+                    studies=[],
+                    post_url=post.get("url"),
+                    author_username=(post.get("owner") or {}).get("username")
+                    or post.get("ownerUsername"),
+                    published_at=post.get("createdAt") or post.get("timestamp"),
+                    likes=post.get("likeCount") or post.get("likesCount"),
+                    comments=post.get("commentCount") or post.get("commentsCount"),
+                    content_type=content_type,
+                    caption=caption or "",
+                    image_url=image_url,
+                    transcript=transcript,
+                )
             return None
 
         pmids_from_images_set = set(pmids_from_images)
@@ -368,11 +420,21 @@ class EvidencePipeline:
             or ordered_pmids[0]
         )
 
+        def _citation_source(pmid: str) -> str:
+            if pmid in pmids_from_images:
+                return "картинка"
+            if pmid in pmids_from_transcript:
+                return "транскрипт"
+            return "описание"
+
         studies: list = []
         fetch_failed = 0
         for pmid in ordered_pmids[:25]:
             try:
                 study = self._pubmed_client.fetch_study(pmid)
+                study = study.model_copy(
+                    update={"citation_source": _citation_source(pmid)}
+                )
                 studies.append(study)
             except (httpx.HTTPError, KeyError, ValueError):
                 fetch_failed += 1
@@ -383,27 +445,27 @@ class EvidencePipeline:
         if not studies:
             return None
 
-        if len(studies) < 3:
-            related_pmids = self._pubmed_client.fetch_related_pmids(
-                pmid=primary_pmid,
-                max_results=10,
-            )
-            seen = {s.pmid for s in studies}
-            for pmid in related_pmids:
-                if len(studies) >= 12:
-                    break
-                if pmid in seen:
-                    continue
-                try:
-                    study = self._pubmed_client.fetch_study(pmid)
-                    studies.append(study)
-                    seen.add(pmid)
-                except (httpx.HTTPError, KeyError, ValueError):
-                    fetch_failed += 1
-
         if debug_stats:
             debug_stats[-1]["pmids_attempted"] = len(ordered_pmids)
             debug_stats[-1]["pmids_fetch_failed"] = fetch_failed
+
+        existing_pmids = {s.pmid for s in studies}
+        if len(studies) < 5:
+            related_pmids = self._pubmed_client.fetch_related_pmids(
+                primary_pmid, max_results=3
+            )
+            for r_pmid in related_pmids:
+                if r_pmid in existing_pmids:
+                    continue
+                try:
+                    related_study = self._pubmed_client.fetch_study(r_pmid)
+                    related_study = related_study.model_copy(
+                        update={"citation_source": "похожее"}
+                    )
+                    studies.append(related_study)
+                    existing_pmids.add(r_pmid)
+                except (httpx.HTTPError, KeyError, ValueError):
+                    pass
 
         studies = self._attach_study_tags(studies=studies)
         if len(studies) > 1:
@@ -412,18 +474,18 @@ class EvidencePipeline:
                 0,
             )
             primary = studies[primary_idx]
-            related = [s for i, s in enumerate(studies) if i != primary_idx]
-            related_sorted = sorted(
-                related,
-                key=lambda s: s.year if s.year is not None else -1,
-                reverse=True,
-            )
-            studies = [primary] + related_sorted
+            others = [s for i, s in enumerate(studies) if i != primary_idx]
+            explicit = [s for s in others if s.citation_source != "похожее"]
+            similar = [s for s in others if s.citation_source == "похожее"]
+            key_year = lambda s: s.year if s.year is not None else -1
+            explicit_sorted = sorted(explicit, key=key_year, reverse=True)
+            similar_sorted = sorted(similar, key=key_year, reverse=True)
+            studies = [primary] + explicit_sorted + similar_sorted
 
         tags = self._post_tags_from_studies(studies) or self._build_tags(
             topic=topic, caption=caption
         )
-        summary = self._build_summary(post=post, caption=caption)
+        summary = self._build_summary(post=post, caption=caption, transcript=transcript)
         display_topic = topic or self._topic_from_caption(caption, post)
         return PostEvidence(
             topic=display_topic,
@@ -433,14 +495,61 @@ class EvidencePipeline:
             post_url=post.get("url"),
             author_username=(post.get("owner") or {}).get("username")
             or post.get("ownerUsername"),
-            published_at=(
-                post.get("createdAt") or post.get("timestamp")
-            ),
+            published_at=(post.get("createdAt") or post.get("timestamp")),
             likes=post.get("likeCount") or post.get("likesCount"),
-            comments=(
-                post.get("commentCount") or post.get("commentsCount")
-            ),
+            comments=(post.get("commentCount") or post.get("commentsCount")),
+            content_type=content_type,
+            caption=caption or "",
+            image_url=image_url,
+            transcript=transcript,
         )
+
+    @staticmethod
+    def _detect_content_type(post: dict) -> str:
+        """Detect post type: reel, carousel, or post."""
+        if (
+            post.get("videoUrl")
+            or post.get("isVideo")
+            or post.get("mediaType") == "Video"
+        ):
+            return "reel"
+        child_posts = post.get("childPosts") or []
+        if len(child_posts) > 1:
+            return "carousel"
+        return "post"
+
+    @staticmethod
+    def _extract_video_url(post: dict) -> str | None:
+        """Return video URL for Reels. Apify may use videoUrl or mediaUrl for videos."""
+        for key in ("videoUrl", "mediaUrl", "video"):
+            url = post.get(key)
+            if isinstance(url, str) and url.startswith("http"):
+                return url
+        for child in post.get("childPosts") or []:
+            if not isinstance(child, dict):
+                continue
+            for ckey in ("videoUrl", "mediaUrl", "url"):
+                url = child.get(ckey)
+                if isinstance(url, str) and url.startswith("http"):
+                    return url
+        return None
+
+    @staticmethod
+    def _get_first_image_url(post: dict) -> str | None:
+        """Return first image URL from post or carousel."""
+        for key in ("displayUrl", "imageUrl", "image", "mediaUrl"):
+            url = post.get(key)
+            if isinstance(url, str) and url.startswith("http"):
+                return url
+        for child in post.get("childPosts") or []:
+            if not isinstance(child, dict):
+                continue
+            for ckey in ("displayUrl", "imageUrl", "image", "url"):
+                url = child.get(ckey)
+                if isinstance(url, str) and url.startswith("http"):
+                    return url
+            break
+        return None
 
     @staticmethod
     def _topic_from_caption(caption: str, post: dict) -> str:
@@ -449,19 +558,29 @@ class EvidencePipeline:
             first_line = caption.strip().split("\n")[0][:80].rstrip()
             if first_line:
                 return first_line
-        username = (post.get("owner") or {}).get("username") or post.get("ownerUsername")
+        username = (post.get("owner") or {}).get("username") or post.get(
+            "ownerUsername"
+        )
         return f"Пост {username or 'блогера'}" if username else "Последний пост"
 
-    def _build_summary(self, post: dict, caption: str) -> str:
+    def _build_summary(
+        self,
+        post: dict,
+        caption: str,
+        transcript: str | None = None,
+    ) -> str:
         """Short rephrasing for table: what the blogger says about the research."""
-        fallback = self._build_summary_fallback(caption)
+        fallback = self._build_summary_fallback(caption or (transcript or ""))
         if not self._openai_api_key:
             return fallback
-        clean_caption = re.sub(r"\s+", " ", caption).strip()
-        if len(clean_caption) < 30:
+        content = caption or ""
+        if transcript:
+            content = f"{content}\n\n{transcript}".strip()
+        clean = re.sub(r"\s+", " ", content).strip()
+        if len(clean) < 30:
             return fallback
         try:
-            return self._summarize_with_ai(caption=clean_caption) or fallback
+            return self._summarize_with_ai(caption=clean[:3000]) or fallback
         except Exception:
             return fallback
 
@@ -497,7 +616,9 @@ class EvidencePipeline:
             )
             response.raise_for_status()
             text = response.json()["choices"][0]["message"]["content"].strip()
-            return self._truncate_summary_at_sentence(text, max_len=600) if text else None
+            return (
+                self._truncate_summary_at_sentence(text, max_len=600) if text else None
+            )
 
     @staticmethod
     def _truncate_summary_at_sentence(text: str, max_len: int = 600) -> str:
@@ -522,9 +643,7 @@ class EvidencePipeline:
         for study in studies:
             ai_tags = self._generate_study_tags(study=study)
             if ai_tags:
-                result.append(
-                    study.model_copy(update={"tags": ai_tags})
-                )
+                result.append(study.model_copy(update={"tags": ai_tags}))
             else:
                 result.append(study)
         return result
@@ -543,7 +662,7 @@ class EvidencePipeline:
                     "content": (
                         "Прочитай статью и выбери 3–4 главных тега (ключевых слова). "
                         "Теги: короткие (1–3 слова), на том же языке, что и статья. "
-                        "Верни только JSON: {\"tags\": [\"тег1\", \"тег2\", \"тег3\", \"тег4\"]}."
+                        'Верни только JSON: {"tags": ["тег1", "тег2", "тег3", "тег4"]}.'
                     ),
                 },
                 {"role": "user", "content": f"Статья:\n{article_text}"},
@@ -567,9 +686,7 @@ class EvidencePipeline:
             raw = parsed.get("tags")
             if isinstance(raw, list):
                 tags = [
-                    str(v).strip()[:50]
-                    for v in raw
-                    if isinstance(v, str) and v.strip()
+                    str(v).strip()[:50] for v in raw if isinstance(v, str) and v.strip()
                 ]
                 seen: set[str] = set()
                 unique = [t for t in tags if t and t not in seen and not seen.add(t)]
@@ -650,7 +767,11 @@ class EvidencePipeline:
                         citations.append(q)
             for match in CITATION_PATTERN_NO_JOURNAL.finditer(rest):
                 author, year, ctx = match.group(1), match.group(2), match.group(3)
-                q = f"{author} {ctx or ''} {year}".strip() if ctx else f"{author} {year}"
+                q = (
+                    f"{author} {ctx or ''} {year}".strip()
+                    if ctx
+                    else f"{author} {year}"
+                )
                 if q not in context_queries:
                     context_queries.append(q)
         return (citations, context_queries)
@@ -661,9 +782,7 @@ class EvidencePipeline:
         Extract text only from post owner: caption + comments where username matches.
         """
         owner_username = (
-            (post.get("owner") or {}).get("username")
-            or post.get("ownerUsername")
-            or ""
+            (post.get("owner") or {}).get("username") or post.get("ownerUsername") or ""
         )
         owner_lower = owner_username.lower() if owner_username else ""
 
@@ -671,7 +790,9 @@ class EvidencePipeline:
             owner = comment.get("owner")
             if isinstance(owner, dict):
                 return (owner.get("username") or "").lower()
-            return (comment.get("ownerUsername") or comment.get("username") or "").lower()
+            return (
+                comment.get("ownerUsername") or comment.get("username") or ""
+            ).lower()
 
         def _is_author_comment(comment: dict) -> bool:
             if not owner_lower:
@@ -759,10 +880,7 @@ class EvidencePipeline:
                         or item.get("imageUrl")
                         or item.get("image")
                     )
-                    if (
-                        isinstance(candidate, str)
-                        and candidate.startswith("http")
-                    ):
+                    if isinstance(candidate, str) and candidate.startswith("http"):
                         image_urls.append(candidate)
 
         child_posts = post.get("childPosts")
@@ -786,9 +904,8 @@ class EvidencePipeline:
                                 or image.get("displayUrl")
                                 or image.get("imageUrl")
                             )
-                            if (
-                                isinstance(candidate, str)
-                                and candidate.startswith("http")
+                            if isinstance(candidate, str) and candidate.startswith(
+                                "http"
                             ):
                                 image_urls.append(candidate)
 
@@ -837,10 +954,10 @@ class EvidencePipeline:
             "Скриншот PubMed/NCBI: абстракт, авторы, NCBI. "
             "Если видишь список цитат (References, Author et al., Journal Year) — извлеки КАЖДУЮ как title в массив titles. "
             "Извлеки ВСЕ похожие на PMID числа и названия/цитаты. "
-            "Верни JSON: {\"pmids\": [\"12345678\"], \"title\": \"...\", \"titles\": [\"Author Journal Year\", ...]}. "
+            'Верни JSON: {"pmids": ["12345678"], "title": "...", "titles": ["Author Journal Year", ...]}. '
             + topic_hint
             + " "
-            "Не скриншот статьи — {\"pmids\": [], \"title\": \"\"}."
+            'Не скриншот статьи — {"pmids": [], "title": ""}.'
         )
 
         browser_headers = {
@@ -909,7 +1026,9 @@ class EvidencePipeline:
                                     m = re.search(r"\b\d{5,8}\b", raw)
                                     if m:
                                         pmids.add(m.group(0))
-                                elif isinstance(raw, int) and 10000 <= raw <= 99_999_999:
+                                elif (
+                                    isinstance(raw, int) and 10000 <= raw <= 99_999_999
+                                ):
                                     pmids.add(str(raw))
                         for title in (parsed.get("title"),) + tuple(
                             parsed.get("titles") or []
@@ -954,7 +1073,11 @@ class EvidencePipeline:
                 "effects of dietary antioxidants on exercise and sports performance"
             )
 
-        lines = [line.strip() for line in (post_text + "\n" + caption).splitlines() if line.strip()]
+        lines = [
+            line.strip()
+            for line in (post_text + "\n" + caption).splitlines()
+            if line.strip()
+        ]
         for line in lines[:12]:
             if len(line) < 15:
                 continue
@@ -981,7 +1104,9 @@ class EvidencePipeline:
             w in text for w in ("antioxidant", "exercise", "sports", "performance")
         ):
             candidates.append("position stand antioxidants exercise sports performance")
-            candidates.append("International Society of Sports Nutrition position stand antioxidants")
+            candidates.append(
+                "International Society of Sports Nutrition position stand antioxidants"
+            )
         if "position" in text and "antioxidant" in text:
             candidates.append("position stand antioxidants exercise sports performance")
 
@@ -1026,9 +1151,7 @@ class EvidencePipeline:
                     )
             except httpx.HTTPError as e:
                 if debug_out is not None and "pubmed_error" not in debug_out:
-                    debug_out["pubmed_error"] = (
-                        f"{type(e).__name__}: {str(e)[:150]}"
-                    )
+                    debug_out["pubmed_error"] = f"{type(e).__name__}: {str(e)[:150]}"
                 logging.getLogger(__name__).warning(
                     "pubmed_search_failed candidate=%s error=%s",
                     candidate[:50],
