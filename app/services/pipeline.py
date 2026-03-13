@@ -376,34 +376,8 @@ class EvidencePipeline:
                 entry["first_infographic_url"] = first_infographic_url
 
         pmids = sorted(set(pmids_from_text + pmids_from_transcript + pmids_from_images))
-        if not pmids:
-            author_text = self._extract_author_text_only(post=post, caption=caption)
-            citation_queries, context_queries = self._parse_citation_lines(author_text)
-            caption_candidates = self._extract_title_candidates(
-                post_text=post_text,
-                caption=caption,
-            )
-            title_candidates = list(image_title_candidates)
-            for cq in citation_queries + context_queries:
-                if cq not in title_candidates:
-                    title_candidates.insert(0, cq)
-            for t in caption_candidates:
-                if t not in title_candidates:
-                    title_candidates.append(t)
-            if debug_stats:
-                entry["caption_snippet"] = caption[:250] if caption else ""
-                entry["citation_queries"] = citation_queries + context_queries
-                entry["title_candidates_count"] = len(title_candidates)
-                entry["first_title_candidate"] = (
-                    title_candidates[0][:120] if title_candidates else ""
-                )
-            pmids = self._search_pmids_by_titles(
-                title_candidates=title_candidates,
-                citation_queries=citation_queries,
-                debug_out=entry if debug_stats else None,
-            )
-            if debug_stats:
-                entry["pmids_from_title"] = len(pmids)
+        if debug_stats and not pmids:
+            entry["caption_snippet"] = caption[:250] if caption else ""
         first_infographic = (
             entry.get("first_infographic_url")
             if (debug_stats and entry)
