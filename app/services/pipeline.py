@@ -345,6 +345,7 @@ class EvidencePipeline:
                 pmids_from_transcript = self._pubmed_client.extract_pmids(transcript)
         pmids_from_text = self._pubmed_client.extract_pmids(post_text)
 
+        content_type = self._detect_content_type(post=post)
         image_urls = self._extract_post_image_urls(post=post)
         pmids_from_images: list[str] = []
         image_title_candidates: list[str] = []
@@ -358,7 +359,7 @@ class EvidencePipeline:
                 "transcript_reason": transcript_reason,
             }
             debug_stats.append(entry)
-        if image_urls:
+        if image_urls and content_type != "reel":
             if debug_stats and entry:
                 entry["images_fetched"] = 0
                 entry["images_failed"] = 0
@@ -403,7 +404,6 @@ class EvidencePipeline:
             )
             if debug_stats:
                 entry["pmids_from_title"] = len(pmids)
-        content_type = self._detect_content_type(post=post)
         first_infographic = (
             entry.get("first_infographic_url")
             if (debug_stats and entry)
@@ -412,6 +412,8 @@ class EvidencePipeline:
         image_url = first_infographic or self._get_first_image_url(post=post) or (
             image_urls[0] if image_urls else None
         )
+        if content_type == "reel":
+            image_url = None  # reels: only transcript/description, no image
         has_media = bool(
             post.get("displayUrl") or post.get("imageUrl") or post.get("childPosts")
         )
