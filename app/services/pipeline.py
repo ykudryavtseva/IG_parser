@@ -71,6 +71,16 @@ AD_MARKERS = (
     "paid partnership",
 )
 
+TRIVIAL_PHRASES = (
+    "thanks for watching",
+    "subscribe",
+    "follow for more",
+    "like and share",
+    "comment below",
+    "you know it's spring when",
+    "you know it's summer when",
+)
+
 EVIDENCE_TERMS = (
     "pmid",
     "pubmed",
@@ -82,6 +92,17 @@ EVIDENCE_TERMS = (
     "систематический обзор",
     "исслед",
     "научн",
+)
+
+SUBSTANCE_TERMS = (
+    *EVIDENCE_TERMS,
+    "evidence",
+    "data show",
+    "finding",
+    "данные",
+    "вывод",
+    "результат",
+    "рассужд",
 )
 
 
@@ -274,6 +295,17 @@ class EvidencePipeline:
             debug_transcript_reason=transcript_reason,
         )
 
+    @staticmethod
+    def _is_trivial_raw_post(caption: str, transcript: str | None) -> bool:
+        """Skip raw posts with no scientific/expert substance (no research, reasoning)."""
+        combined = f"{(caption or '').strip()} {(transcript or '').strip()}".strip()
+        lower = combined.lower()
+        if any(p in lower for p in TRIVIAL_PHRASES) and len(combined) < 150:
+            return True
+        if not any(term in lower for term in SUBSTANCE_TERMS):
+            return True
+        return False
+
     def _is_non_research_post(self, post: dict) -> bool:
         """Skip ads, sponsored posts, pure marketing."""
         caption = (
@@ -393,7 +425,7 @@ class EvidencePipeline:
         )
         raw_content = bool(caption or has_media or transcript)
         if not pmids:
-            if raw_content:
+            if raw_content and not self._is_trivial_raw_post(caption, transcript):
                 tags_raw = self._build_tags(topic=topic, caption=caption)
                 summary_raw = self._build_summary(
                     post=post, caption=caption, transcript=transcript

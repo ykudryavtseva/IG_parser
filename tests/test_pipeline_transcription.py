@@ -29,7 +29,7 @@ def test_raw_content_mode_returns_post_without_studies() -> None:
                 {
                     "id": "post1",
                     "url": "https://instagram.com/p/1",
-                    "caption": "Креатин помогает при тренировках",
+                    "caption": "Исследование: креатин помогает при тренировках",
                     "owner": {"username": "blogger"},
                     "ownerUsername": "blogger",
                     "createdAt": "2024-01-15T10:00:00Z",
@@ -54,7 +54,7 @@ def test_raw_content_mode_returns_post_without_studies() -> None:
     assert len(result.items) == 1
     item = result.items[0]
     assert item.studies == []
-    assert item.caption == "Креатин помогает при тренировках"
+    assert item.caption == "Исследование: креатин помогает при тренировках"
     assert item.content_type is not None
     assert item.author_username == "blogger"
 
