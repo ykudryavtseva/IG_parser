@@ -51,3 +51,4 @@ class PipelineRunResult(BaseModel):
     debug_pubmed_search_error: str = ""
     debug_first_title_candidate: str = ""
     debug_apify_error: str = ""
+    debug_transcript_reason: str = ""

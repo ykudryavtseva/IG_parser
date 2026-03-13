@@ -235,6 +235,15 @@ class EvidencePipeline:
             (s.get("pubmed_error") for s in debug_stats if s.get("pubmed_error")),
             "",
         )
+        transcript_reason = next(
+            (
+                s.get("transcript_reason", "")
+                for s in debug_stats
+                if s.get("transcript_reason")
+                and s.get("transcript_reason") not in ("ok", "unknown")
+            ),
+            "",
+        )
         return PipelineRunResult(
             items=results,
             posts_fetched=len(posts),
@@ -262,6 +271,7 @@ class EvidencePipeline:
                 "",
             ),
             debug_apify_error=apify_error or "",
+            debug_transcript_reason=transcript_reason,
         )
 
     def _is_non_research_post(self, post: dict) -> bool:
@@ -316,12 +326,20 @@ class EvidencePipeline:
         transcript: str | None = None
         pmids_from_transcript: list[str] = []
         video_url = self._extract_video_url(post=post)
+        transcript_reason = "no_video_url" if not video_url else ""
         if (
             video_url
             and self._transcription_service
             and self._detect_content_type(post=post) == "reel"
         ):
-            transcript = self._transcription_service.transcribe(video_url)
+            svc = self._transcription_service
+            if hasattr(svc, "transcribe_with_reason"):
+                transcript, transcript_reason = svc.transcribe_with_reason(video_url)
+            else:
+                transcript = svc.transcribe(video_url)
+                transcript_reason = "ok" if transcript else "unknown"
+        elif video_url and not self._transcription_service:
+            transcript_reason = "no_transcription_service"
             if transcript:
                 post_text = f"{post_text}\n\n{transcript}".strip()
                 pmids_from_transcript = self._pubmed_client.extract_pmids(transcript)
@@ -330,19 +348,21 @@ class EvidencePipeline:
         image_urls = self._extract_post_image_urls(post=post)
         pmids_from_images: list[str] = []
         image_title_candidates: list[str] = []
+        first_infographic_url: str | None = None
         entry: dict = {}
         if debug_stats is not None:
             entry = {
                 "pmids_text": len(pmids_from_text),
                 "image_urls": len(image_urls),
                 "pmids_images": 0,
+                "transcript_reason": transcript_reason,
             }
             debug_stats.append(entry)
         if image_urls:
             if debug_stats and entry:
                 entry["images_fetched"] = 0
                 entry["images_failed"] = 0
-            pmids_from_images, image_title_candidates = (
+            pmids_from_images, image_title_candidates, first_infographic_url = (
                 self._extract_pmids_and_titles_from_images(
                     image_urls=image_urls,
                     topic=topic,
@@ -351,6 +371,8 @@ class EvidencePipeline:
             )
             if debug_stats:
                 entry["pmids_images"] = len(pmids_from_images)
+            if first_infographic_url:
+                entry["first_infographic_url"] = first_infographic_url
 
         pmids = sorted(set(pmids_from_text + pmids_from_transcript + pmids_from_images))
         if not pmids:
@@ -382,7 +404,12 @@ class EvidencePipeline:
             if debug_stats:
                 entry["pmids_from_title"] = len(pmids)
         content_type = self._detect_content_type(post=post)
-        image_url = self._get_first_image_url(post=post) or (
+        first_infographic = (
+            entry.get("first_infographic_url")
+            if (debug_stats and entry)
+            else first_infographic_url
+        )
+        image_url = first_infographic or self._get_first_image_url(post=post) or (
             image_urls[0] if image_urls else None
         )
         has_media = bool(
@@ -520,15 +547,32 @@ class EvidencePipeline:
 
     @staticmethod
     def _extract_video_url(post: dict) -> str | None:
-        """Return video URL for Reels. Apify may use videoUrl or mediaUrl for videos."""
-        for key in ("videoUrl", "mediaUrl", "video"):
+        """Return video URL for Reels. Apify actors use different field names."""
+        for key in (
+            "videoUrl",
+            "mediaUrl",
+            "video",
+            "playbackUrl",
+            "link",
+            "displayUrl",
+        ):
             url = post.get(key)
             if isinstance(url, str) and url.startswith("http"):
-                return url
+                if key in ("videoUrl", "mediaUrl", "video", "playbackUrl"):
+                    return url
+                if post.get("isVideo") or post.get("mediaType") == "Video":
+                    return url
         for child in post.get("childPosts") or []:
             if not isinstance(child, dict):
                 continue
-            for ckey in ("videoUrl", "mediaUrl", "url"):
+            for ckey in (
+                "videoUrl",
+                "mediaUrl",
+                "video",
+                "playbackUrl",
+                "url",
+                "link",
+            ):
                 url = child.get(ckey)
                 if isinstance(url, str) and url.startswith("http"):
                     return url
@@ -920,15 +964,15 @@ class EvidencePipeline:
         image_urls: list[str],
         topic: str = "",
         debug_counts: dict[str, int] | None = None,
-    ) -> tuple[list[str], list[str]]:
-        """One Vision call per image: extract PMIDs and/or title."""
+    ) -> tuple[list[str], list[str], str | None]:
+        """One Vision call per image: extract PMIDs/title. Prefer infographics."""
         if not image_urls:
-            return [], []
+            return [], [], None
         if not self._openai_api_key:
             if debug_counts is not None:
                 debug_counts["images_failed"] = len(image_urls)
                 debug_counts["sample_status"] = "no_openai_key"
-            return [], []
+            return [], [], None
 
         headers = {
             "Authorization": f"Bearer {self._openai_api_key}",
@@ -936,6 +980,7 @@ class EvidencePipeline:
         }
         pmids: set[str] = set()
         titles: list[str] = []
+        first_infographic_url: str | None = None
         images_fetched = 0
         images_failed = 0
 
@@ -947,17 +992,15 @@ class EvidencePipeline:
         )
 
         system_prompt = (
-            "Контекст: это картинка из Instagram. Нужно найти статью в PubMed. "
-            "Если на картинке нет прямой ссылки на PubMed и нет PMID — "
-            "всё равно извлеки точное название статьи (title), мы поищем её в PubMed. "
-            "PMID — число 5-8 цифр (в URL, под надписью PMID, в тексте). "
-            "Скриншот PubMed/NCBI: абстракт, авторы, NCBI. "
-            "Если видишь список цитат (References, Author et al., Journal Year) — извлеки КАЖДУЮ как title в массив titles. "
-            "Извлеки ВСЕ похожие на PMID числа и названия/цитаты. "
-            'Верни JSON: {"pmids": ["12345678"], "title": "...", "titles": ["Author Journal Year", ...]}. '
+            "Контекст: это картинка из Instagram. "
+            "СНАЧАЛА определи: это инфографика (график, диаграмма, текст-слайд с данными) "
+            "или обычное фото (селфи, еда, зал)? Верни is_infographic: true/false. "
+            "Если is_infographic: false — верни только {\"is_infographic\": false, \"pmids\": [], \"title\": \"\"}. "
+            "Если is_infographic: true — извлеки статью в PubMed. "
+            "PMID — число 5-8 цифр. "
+            "Если видишь список цитат — извлеки КАЖДУЮ в titles. "
+            'Верни JSON: {"is_infographic": true, "pmids": [], "title": "...", "titles": []}. '
             + topic_hint
-            + " "
-            'Не скриншот статьи — {"pmids": [], "title": ""}.'
         )
 
         browser_headers = {
@@ -1019,6 +1062,10 @@ class EvidencePipeline:
                         response.raise_for_status()
                         content = response.json()["choices"][0]["message"]["content"]
                         parsed = json.loads(content)
+                        if parsed.get("is_infographic") is False:
+                            continue
+                        if first_infographic_url is None and parsed.get("is_infographic") is True:
+                            first_infographic_url = image_url
                         raw_pmids = parsed.get("pmids")
                         if isinstance(raw_pmids, list):
                             for raw in raw_pmids:
@@ -1053,13 +1100,13 @@ class EvidencePipeline:
                 debug_counts["images_failed"] = len(image_urls)
                 debug_counts["images_fetched"] = 0
                 debug_counts["sample_status"] = f"error:{type(e).__name__}"
-            return [], []
+            return [], [], None
 
         if debug_counts is not None:
             debug_counts["images_fetched"] = images_fetched
             debug_counts["images_failed"] = images_failed
 
-        return sorted(pmids), titles[:8]
+        return sorted(pmids), titles[:8], first_infographic_url
 
     @staticmethod
     def _extract_title_candidates(post_text: str, caption: str) -> list[str]:

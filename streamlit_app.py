@@ -220,6 +220,11 @@ def main() -> None:
                 with st.expander("Отладка: первый URL и статус загрузки"):
                     st.code(run_result.debug_sample_url)
                     st.write(f"Статус: `{run_result.debug_sample_status}`")
+            if run_result.debug_transcript_reason:
+                st.info(
+                    f"**Транскрипт:** причина пустого поля — `{run_result.debug_transcript_reason}`. "
+                    "(no_video_url = не reel; download_failed_http_403 = CDN блокирует.)"
+                )
 
             has_images = run_result.debug_posts_with_images > 0
             all_failed = (
