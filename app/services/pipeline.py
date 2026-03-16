@@ -422,6 +422,14 @@ class EvidencePipeline:
                 entry["first_infographic_url"] = first_infographic_url
 
         pmids = sorted(set(pmids_from_text + pmids_from_transcript + pmids_from_images))
+        # PMID только из картинки при тривиальной подписи — вероятный false positive Vision
+        if (
+            pmids
+            and not pmids_from_text
+            and not pmids_from_transcript
+            and self._is_trivial_raw_post(caption, transcript)
+        ):
+            return None
         if not pmids:
             author_text = self._extract_author_text_only(post=post, caption=caption)
             citation_queries, context_queries = self._parse_citation_lines(author_text)
