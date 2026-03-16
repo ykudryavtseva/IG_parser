@@ -94,6 +94,7 @@ def main() -> int:
     new_post_ids = [item.post_url or "" for item in items if item.post_url]
 
     if items:
+        rows_for_local: list = []
         spreadsheet_id = _get_env("GOOGLE_SHEETS_SPREADSHEET_ID")
         if spreadsheet_id:
             from app.services.sheets_service import GoogleSheetsExporter
@@ -112,11 +113,24 @@ def main() -> int:
                 )
                 exported = exporter.export(items=items)
                 print(f"Выгружено в Sheets: {exported} строк.")
+                export_rows = exporter.get_last_exported_rows()
+                if export_rows and len(export_rows) > 1:
+                    rows_for_local = export_rows[1:]
             except Exception as exc:
                 print(f"Ошибка экспорта в Sheets: {exc}")
-                return 1
+                rows_for_local = []
         else:
-            print("GOOGLE_SHEETS_SPREADSHEET_ID не задан. Пропуск экспорта.")
+            print("GOOGLE_SHEETS_SPREADSHEET_ID не задан. Пропуск экспорта в Sheets.")
+
+        if not rows_for_local:
+            from app.services.table_storage import build_rows_from_items
+
+            rows_for_local = build_rows_from_items(items)
+        if rows_for_local:
+            from app.services.table_storage import append_rows_to_csv
+
+            n = append_rows_to_csv(rows_for_local)
+            print(f"Добавлено в локальную таблицу: {n} строк.")
     else:
         print("Нет новых постов с исследованиями.")
 

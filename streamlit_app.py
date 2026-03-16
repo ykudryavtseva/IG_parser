@@ -12,7 +12,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 load_dotenv()
 
-APP_VERSION = "0.5.3"
+APP_VERSION = "0.5.4"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
@@ -73,10 +73,13 @@ def _build_pipeline():
     return pipeline
 
 
-def _export_to_sheets_if_configured(items: list) -> int:
+def _export_to_sheets_if_configured(
+    items: list,
+) -> tuple[int, int | None, str, bool, list[list[str]]]:
+    """Export to Sheets. Returns (rows_added, sheet_gid, resolved_worksheet, fallback_used, rows)."""
     spreadsheet_id = _get_secret("GOOGLE_SHEETS_SPREADSHEET_ID")
     if not spreadsheet_id:
-        return 0
+        return 0, None, "", False, []
 
     from app.services.sheets_service import GoogleSheetsExporter
 
@@ -95,10 +98,15 @@ def _export_to_sheets_if_configured(items: list) -> int:
             openai_api_key=openai_api_key,
             openai_model=openai_model,
         )
-        return exporter.export(items=items)
+        count = exporter.export(items=items)
+        gid = exporter.get_sheet_gid()
+        resolved = exporter._worksheet_name
+        fallback = getattr(exporter, "_worksheet_fallback", False)
+        rows = exporter.get_last_exported_rows() or []
+        return count, gid, resolved, fallback, rows
     except Exception as exc:
         st.warning(f"Экспорт в Google Sheets пропущен: {exc}")
-        return 0
+        return 0, None, "", False, []
 
 
 def main() -> None:
@@ -110,6 +118,16 @@ def main() -> None:
     st.title("🔬 IG Parser — Instagram → PubMed")
     st.caption(f"Версия {APP_VERSION}")
 
+    tab_parser, tab_table = st.tabs(["Парсер", "Таблица"])
+
+    with tab_parser:
+        _render_parser_tab()
+
+    with tab_table:
+        _render_table_tab()
+
+
+def _render_parser_tab() -> None:
     from app.services.sync_state import (
         load_state,
         mark_run_complete,
@@ -160,6 +178,10 @@ def main() -> None:
         st.session_state.last_run_results = []
     if "last_run_appended_rows" not in st.session_state:
         st.session_state.last_run_appended_rows = 0
+    if "last_run_sheet_gid" not in st.session_state:
+        st.session_state.last_run_sheet_gid = None
+    if "last_run_resolved_sheet" not in st.session_state:
+        st.session_state.last_run_resolved_sheet = None
 
     results = st.session_state.last_run_results
     appended_rows = st.session_state.last_run_appended_rows
@@ -311,25 +333,67 @@ def main() -> None:
                             st.error(
                                 f"**Ошибка PubMed:** {run_result.debug_pubmed_search_error}"
                             )
+                st.session_state.last_run_results = []
+                st.session_state.last_run_appended_rows = 0
+                st.session_state.last_run_sheet_gid = None
+                st.session_state.last_run_resolved_sheet = None
+
                 return
 
             appended_rows = 0
+            sheet_gid: int | None = None
+            resolved_sheet = ""
+            rows_for_local: list[list[str]] = []
+
             if has_sheets:
+                worksheet_name = _get_secret("GOOGLE_SHEETS_WORKSHEET", "Sheet1")
                 st.write("**2. Выгрузка в Google Sheets**")
-                appended_rows = _export_to_sheets_if_configured(items=results)
-                st.write(f"✓ Добавлено строк: {appended_rows}")
+                (
+                    appended_rows,
+                    sheet_gid,
+                    resolved_sheet,
+                    used_fallback,
+                    export_rows,
+                ) = _export_to_sheets_if_configured(items=results)
+                st.session_state.last_run_sheet_gid = sheet_gid
+                st.session_state.last_run_resolved_sheet = resolved_sheet
+                st.write(
+                    f"✓ Добавлено строк: {appended_rows} (лист «{resolved_sheet}»)"
+                )
+                if used_fallback:
+                    st.warning(
+                        f"Лист «{worksheet_name}» не найден в таблице. "
+                        f"Запись идёт на «{resolved_sheet}» — проверьте GOOGLE_SHEETS_WORKSHEET."
+                    )
                 if appended_rows == 0 and any(item.studies for item in results):
                     st.warning(
                         "В таблицу добавлено 0 строк при наличии исследований. "
                         "Проверьте GOOGLE_SHEETS_CREDENTIALS_JSON и имя листа "
                         "(GOOGLE_SHEETS_WORKSHEET)."
                     )
+                if export_rows and len(export_rows) > 1:
+                    rows_for_local = export_rows[1:]
             else:
                 if results:
-                    st.warning(
-                        "**Google Sheets не настроен.** GOOGLE_SHEETS_SPREADSHEET_ID или "
-                        "GOOGLE_SHEETS_CREDENTIALS_JSON не заданы. Результаты не попали в таблицу."
+                    st.error(
+                        "**Выгрузка в Google Sheets пропущена:** не задан "
+                        "GOOGLE_SHEETS_SPREADSHEET_ID или GOOGLE_SHEETS_CREDENTIALS_JSON. "
+                        "Результаты сохраняются в локальную таблицу (вкладка «Таблица»)."
                     )
+                if results:
+                    from app.services.table_storage import build_rows_from_items
+
+                    rows_for_local = build_rows_from_items(results)
+
+            if not rows_for_local and results:
+                from app.services.table_storage import build_rows_from_items
+
+                rows_for_local = build_rows_from_items(results)
+            if rows_for_local:
+                from app.services.table_storage import append_rows_to_csv
+
+                n = append_rows_to_csv(rows_for_local)
+                st.write(f"✓ Добавлено в локальную таблицу: {n} строк")
             st.session_state.last_run_appended_rows = appended_rows
 
             if results:
@@ -340,10 +404,21 @@ def main() -> None:
 
         if has_sheets and appended_rows > 0:
             spreadsheet_id = _get_secret("GOOGLE_SHEETS_SPREADSHEET_ID")
+            worksheet_name = _get_secret("GOOGLE_SHEETS_WORKSHEET", "Sheet1")
             if spreadsheet_id:
+                gid = st.session_state.get("last_run_sheet_gid")
                 sheets_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
+                if gid is not None:
+                    sheets_url += f"#gid={gid}"
                 st.markdown(
                     f"📊 **Выгрузка в Google Sheets:** [открыть таблицу]({sheets_url})"
+                )
+                sheet_label = (
+                    st.session_state.get("last_run_resolved_sheet") or worksheet_name
+                )
+                st.caption(
+                    f"Таблица ID: …{spreadsheet_id[-8:]} | Лист: «{sheet_label}». "
+                    "Новые строки — в конце."
                 )
 
         for item in results:
@@ -379,6 +454,34 @@ def main() -> None:
             mime="application/json",
             use_container_width=True,
         )
+
+
+def _render_table_tab() -> None:
+    """Render editable local table tab."""
+    from app.services.table_storage import (
+        DELETE_COL,
+        load_table_csv,
+        save_table_csv,
+    )
+
+    st.markdown(
+        "Локальная таблица — данные сохраняются в файл `output/research_table.csv`. "
+        "Редактируйте ячейки и отмечайте строки для удаления в колонке «Удалить»."
+    )
+    df = load_table_csv()
+    if df.empty or (len(df.columns) == 1 and DELETE_COL in df.columns):
+        st.info("Таблица пуста. Запустите выгрузку на вкладке «Парсер».")
+        return
+
+    edited = st.data_editor(
+        df,
+        use_container_width=True,
+        column_config={DELETE_COL: st.column_config.CheckboxColumn("Удалить")},
+    )
+    if st.button("Сохранить изменения"):
+        save_table_csv(edited)
+        st.success("Изменения сохранены.")
+        st.rerun()
 
 
 if __name__ == "__main__":

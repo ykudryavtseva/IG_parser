@@ -36,25 +36,51 @@ class GoogleSheetsExporter:
             credentials_path=credentials_path,
             credentials_json=credentials_json,
         )
-        self._worksheet_name = self._resolve_worksheet_name(
-            requested_name=worksheet_name,
+        self._worksheet_name, self._worksheet_fallback = (
+            self._resolve_worksheet_name(requested_name=worksheet_name)
         )
+        self._last_exported_rows: list[list[str]] | None = None
+
+    def get_last_exported_rows(self) -> list[list[str]] | None:
+        """Rows from last export (header + data), for local storage sync."""
+        return getattr(self, "_last_exported_rows", None)
+
+    def _range(self, a1: str = "") -> str:
+        """Build A1 range; quote sheet name if it contains spaces/special chars."""
+        name = self._worksheet_name
+        needs_quotes = " " in name or "'" in name or "!" in name
+        quoted = f"'{name}'" if needs_quotes else name
+        return f"{quoted}!{a1}" if a1 else quoted
 
     def export(self, items: list[PostEvidence]) -> int:
         self._prefill_ai_cache_parallel(items=items)
         rows = self._build_rows(items=items)
+        self._last_exported_rows = rows
         if len(rows) == 1:
             return 0
 
         self._ensure_header_row(header=rows[0])
         body = {"values": rows[1:]}
-        self._service.spreadsheets().values().append(
-            spreadsheetId=self._spreadsheet_id,
-            range=self._worksheet_name,
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body=body,
-        ).execute()
+        response = (
+            self._service.spreadsheets()
+            .values()
+            .append(
+                spreadsheetId=self._spreadsheet_id,
+                range=self._range("A1"),
+                valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS",
+                body=body,
+            )
+            .execute()
+        )
+        updated_rows = (
+            response.get("updates", {}).get("updatedRows") or len(rows) - 1
+        )
+        if updated_rows != len(rows) - 1:
+            raise RuntimeError(
+                f"Sheets API reported {updated_rows} rows updated, expected "
+                f"{len(rows) - 1}"
+            )
         return len(rows) - 1
 
     def _prefill_ai_cache_parallel(self, items: list[PostEvidence]) -> None:
@@ -92,7 +118,7 @@ class GoogleSheetsExporter:
             .values()
             .get(
                 spreadsheetId=self._spreadsheet_id,
-                range=f"{self._worksheet_name}!1:1",
+                range=self._range("1:1"),
             )
             .execute()
         )
@@ -103,7 +129,7 @@ class GoogleSheetsExporter:
                 # Header changed; reset worksheet for stable row mapping.
                 self._service.spreadsheets().values().clear(
                     spreadsheetId=self._spreadsheet_id,
-                    range=self._worksheet_name,
+                    range=self._range(),
                     body={},
                 ).execute()
             else:
@@ -111,12 +137,13 @@ class GoogleSheetsExporter:
 
         self._service.spreadsheets().values().update(
             spreadsheetId=self._spreadsheet_id,
-            range=f"{self._worksheet_name}!1:1",
+            range=self._range("1:1"),
             valueInputOption="RAW",
             body={"values": [header]},
         ).execute()
 
-    def _resolve_worksheet_name(self, requested_name: str) -> str:
+    def _resolve_worksheet_name(self, requested_name: str) -> tuple[str, bool]:
+        """Return (resolved_name, used_fallback). Fallback=True if requested not found."""
         metadata = (
             self._service.spreadsheets()
             .get(
@@ -130,10 +157,35 @@ class GoogleSheetsExporter:
             for sheet in metadata.get("sheets", [])
         ]
         if requested_name in titles:
-            return requested_name
+            return requested_name, False
         if titles:
-            return titles[0]
-        return requested_name
+            return titles[0], True
+        return requested_name, False
+
+    def get_worksheet_info(self) -> tuple[str, bool]:
+        """Return (resolved_worksheet_name, used_fallback)."""
+        return self._worksheet_name, getattr(
+            self, "_worksheet_fallback", False
+        )
+
+    def get_sheet_gid(self) -> int | None:
+        """Return sheetId (gid) for the worksheet, for URL #gid=."""
+        try:
+            metadata = (
+                self._service.spreadsheets()
+                .get(
+                    spreadsheetId=self._spreadsheet_id,
+                    fields="sheets.properties(sheetId,title)",
+                )
+                .execute()
+            )
+            for sheet in metadata.get("sheets", []):
+                props = sheet.get("properties", {})
+                if props.get("title") == self._worksheet_name:
+                    return props.get("sheetId")
+        except Exception:
+            pass
+        return None
 
     def _build_rows(self, items: list[PostEvidence]) -> list[list[str]]:
         header = [
