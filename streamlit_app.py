@@ -12,7 +12,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 load_dotenv()
 
-APP_VERSION = "0.5.7"
+APP_VERSION = "0.5.8"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
@@ -188,8 +188,17 @@ def _render_parser_tab() -> None:
     if "last_run_resolved_sheet" not in st.session_state:
         st.session_state.last_run_resolved_sheet = None
 
+    light_filter = st.checkbox(
+        "Лёгкая фильтрация (включить все посты с контентом)",
+        value=True,
+        help="Если включено — AI-классификатор не используется, попадают все посты с подписью/медиа. "
+        "Если выключено — только посты с научным обоснованием, экспертизой или исследованиями.",
+    )
+    skip_scientific_filter = light_filter
+
     results = st.session_state.last_run_results
     appended_rows = st.session_state.last_run_appended_rows
+
     if st.button(
         "Выгрузить новые посты сейчас", type="primary", use_container_width=True
     ):
@@ -224,6 +233,7 @@ def _render_parser_tab() -> None:
                     latest_posts_mode=True,
                     only_posts_newer_than=None,
                     processed_post_ids=processed,
+                    skip_scientific_filter=skip_scientific_filter,
                 )
             except Exception as exc:
                 st.exception(exc)

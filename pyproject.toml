@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ig-parser"
-version = "0.5.7"
+version = "0.5.8"
 description = "Instagram to PubMed evidence extraction MVP"
 authors = ["user <user@example.com>"]
 readme = "README.md"

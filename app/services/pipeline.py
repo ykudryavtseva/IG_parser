@@ -147,6 +147,7 @@ class EvidencePipeline:
         latest_posts_mode: bool = False,
         only_posts_newer_than: str | None = None,
         processed_post_ids: set[str] | None = None,
+        skip_scientific_filter: bool = False,
     ) -> PipelineRunResult:
         """Run pipeline. In latest_posts_mode: parse N newest posts from given sources, no topic filter."""
         selected_sources = [s.strip() for s in sources if s and s.strip()]
@@ -235,6 +236,7 @@ class EvidencePipeline:
                     post_topic,
                     skip_relevance=not use_relevance,
                     debug_stats=debug_stats,
+                    skip_scientific_filter=skip_scientific_filter,
                 ): post
                 for post in posts_to_process
             }
@@ -412,6 +414,7 @@ class EvidencePipeline:
         topic: str,
         skip_relevance: bool = False,
         debug_stats: list[dict] | None = None,
+        skip_scientific_filter: bool = False,
     ) -> PostEvidence | None:
         post_url = post.get("url") or "<no-url>"
         caption = (
@@ -477,6 +480,7 @@ class EvidencePipeline:
             pmids
             and not pmids_from_text
             and not pmids_from_transcript
+            and not skip_scientific_filter
             and not self._is_scientific_post_content(caption, transcript)
         ):
             return None
@@ -516,6 +520,7 @@ class EvidencePipeline:
                 # PMID только из поиска по подписи — контент должен быть научным
                 if (
                     pmids
+                    and not skip_scientific_filter
                     and not self._is_scientific_post_content(caption, transcript)
                 ):
                     return None
@@ -536,7 +541,10 @@ class EvidencePipeline:
         )
         raw_content = bool(caption or has_media or transcript)
         if not pmids:
-            if raw_content and self._is_scientific_post_content(caption, transcript):
+            if raw_content and (
+                skip_scientific_filter
+                or self._is_scientific_post_content(caption, transcript)
+            ):
                 tags_raw = self._build_tags(topic=topic, caption=caption)
                 summary_raw = self._build_summary(
                     post=post, caption=caption, transcript=transcript
