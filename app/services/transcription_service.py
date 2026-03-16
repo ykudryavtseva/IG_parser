@@ -98,6 +98,7 @@ class WhisperTranscriptionService:
                 "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
             ),
             "Accept": "video/*,*/*;q=0.8",
+            "Referer": "https://www.instagram.com/",
         }
         try:
             with httpx.Client(

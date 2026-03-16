@@ -12,7 +12,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 load_dotenv()
 
-APP_VERSION = "0.5.6"
+APP_VERSION = "0.5.7"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
