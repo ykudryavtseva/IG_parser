@@ -69,6 +69,13 @@ GOOGLE_SHEETS_CREDENTIALS_JSON = '{"type":"service_account","project_id":"...","
 
 ---
 
+## Перед каждым деплоем
+
+1. **Обновите версию** в `pyproject.toml` и `streamlit_app.py` (APP_VERSION).
+2. Коммит, push — Streamlit Cloud подхватит изменения.
+
+---
+
 ## Устранение ошибок
 
 | Проблема | Что сделать |
