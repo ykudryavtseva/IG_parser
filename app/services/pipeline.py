@@ -446,6 +446,7 @@ class EvidencePipeline:
 
         content_type = self._detect_content_type(post=post)
         image_urls = self._extract_post_image_urls(post=post)
+        caption_for_classifier = caption
         pmids_from_images: list[str] = []
         image_title_candidates: list[str] = []
         first_infographic_url: str | None = None
@@ -462,13 +463,21 @@ class EvidencePipeline:
             if debug_stats and entry:
                 entry["images_fetched"] = 0
                 entry["images_failed"] = 0
-            pmids_from_images, image_title_candidates, first_infographic_url = (
-                self._extract_pmids_and_titles_from_images(
-                    image_urls=image_urls,
-                    topic=topic,
-                    debug_counts=entry if debug_stats else None,
-                )
+            (
+                pmids_from_images,
+                image_title_candidates,
+                first_infographic_url,
+                overlay_texts,
+            ) = self._extract_pmids_and_titles_from_images(
+                image_urls=image_urls,
+                topic=topic,
+                debug_counts=entry if debug_stats else None,
             )
+            if overlay_texts:
+                post_text = f"{post_text}\n\n" + "\n\n".join(overlay_texts)
+                caption_for_classifier = f"{caption}\n\n" + "\n\n".join(overlay_texts)
+            else:
+                caption_for_classifier = caption
             if debug_stats:
                 entry["pmids_images"] = len(pmids_from_images)
             if first_infographic_url:
@@ -481,7 +490,7 @@ class EvidencePipeline:
             and not pmids_from_text
             and not pmids_from_transcript
             and not skip_scientific_filter
-            and not self._is_scientific_post_content(caption, transcript)
+            and not self._is_scientific_post_content(caption_for_classifier, transcript)
         ):
             return None
         if not pmids:
@@ -521,7 +530,7 @@ class EvidencePipeline:
                 if (
                     pmids
                     and not skip_scientific_filter
-                    and not self._is_scientific_post_content(caption, transcript)
+                    and not self._is_scientific_post_content(caption_for_classifier, transcript)
                 ):
                     return None
         if debug_stats and not pmids:
@@ -543,11 +552,13 @@ class EvidencePipeline:
         if not pmids:
             if raw_content and (
                 skip_scientific_filter
-                or self._is_scientific_post_content(caption, transcript)
+                or self._is_scientific_post_content(caption_for_classifier, transcript)
             ):
                 tags_raw = self._build_tags(topic=topic, caption=caption)
                 summary_raw = self._build_summary(
-                    post=post, caption=caption, transcript=transcript
+                    post=post,
+                    caption=caption_for_classifier,
+                    transcript=transcript,
                 )
                 return PostEvidence(
                     topic=self._topic_from_caption(caption, post),
@@ -1091,15 +1102,15 @@ class EvidencePipeline:
         image_urls: list[str],
         topic: str = "",
         debug_counts: dict[str, int] | None = None,
-    ) -> tuple[list[str], list[str], str | None]:
-        """One Vision call per image: extract PMIDs/title. Prefer infographics."""
+    ) -> tuple[list[str], list[str], str | None, list[str]]:
+        """One Vision call per image: extract PMIDs/title/overlay_text. Prefer infographics."""
         if not image_urls:
-            return [], [], None
+            return [], [], None, []
         if not self._openai_api_key:
             if debug_counts is not None:
                 debug_counts["images_failed"] = len(image_urls)
                 debug_counts["sample_status"] = "no_openai_key"
-            return [], [], None
+            return [], [], None, []
 
         headers = {
             "Authorization": f"Bearer {self._openai_api_key}",
@@ -1107,6 +1118,7 @@ class EvidencePipeline:
         }
         pmids: set[str] = set()
         titles: list[str] = []
+        overlay_texts: list[str] = []
         first_infographic_url: str | None = None
         images_fetched = 0
         images_failed = 0
@@ -1119,14 +1131,17 @@ class EvidencePipeline:
         )
 
         system_prompt = (
-            "Контекст: это картинка из Instagram. "
+            "Контекст: это картинка из Instagram (пост или слайд карусели). "
+            "ВСЕГДА извлеки весь видимый текст (заголовки, оверлеи, подписи) в overlay_text. "
             "СНАЧАЛА определи: это инфографика (график, диаграмма, текст-слайд с данными) "
             "или обычное фото (селфи, еда, зал)? Верни is_infographic: true/false. "
-            "Если is_infographic: false — верни только {\"is_infographic\": false, \"pmids\": [], \"title\": \"\"}. "
-            "Если is_infographic: true — извлеки статью в PubMed. "
+            "Если is_infographic: false — верни {\"is_infographic\": false, \"pmids\": [], "
+            '"title": "", "overlay_text": "извлечённый текст"}. '
+            "Если is_infographic: true — извлеки статью в PubMed и overlay_text. "
             "PMID — число 5-8 цифр. "
             "Если видишь список цитат — извлеки КАЖДУЮ в titles. "
-            'Верни JSON: {"is_infographic": true, "pmids": [], "title": "...", "titles": []}. '
+            'Верни JSON: {"is_infographic": ..., "pmids": [], "title": "...", "titles": [], '
+            '"overlay_text": "весь видимый текст на изображении"}. '
             + topic_hint
         )
 
@@ -1191,6 +1206,9 @@ class EvidencePipeline:
                         response.raise_for_status()
                         content = response.json()["choices"][0]["message"]["content"]
                         parsed = json.loads(content)
+                        ov = parsed.get("overlay_text")
+                        if isinstance(ov, str) and ov.strip():
+                            overlay_texts.append(ov.strip())
                         if parsed.get("is_infographic") is False:
                             continue
                         if first_infographic_url is None and parsed.get("is_infographic") is True:
@@ -1229,13 +1247,13 @@ class EvidencePipeline:
                 debug_counts["images_failed"] = len(image_urls)
                 debug_counts["images_fetched"] = 0
                 debug_counts["sample_status"] = f"error:{type(e).__name__}"
-            return [], [], None
+            return [], [], None, []
 
         if debug_counts is not None:
             debug_counts["images_fetched"] = images_fetched
             debug_counts["images_failed"] = images_failed
 
-        return sorted(pmids), titles[:8], first_infographic_url
+        return sorted(pmids), titles[:8], first_infographic_url, overlay_texts
 
     @staticmethod
     def _extract_title_candidates(post_text: str, caption: str) -> list[str]:
