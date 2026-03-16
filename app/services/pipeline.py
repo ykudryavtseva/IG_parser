@@ -311,14 +311,63 @@ class EvidencePipeline:
 
     @staticmethod
     def _is_trivial_raw_post(caption: str, transcript: str | None) -> bool:
-        """Skip raw posts with no scientific/expert substance (no research, reasoning)."""
+        """Skip raw posts with no research/evidence cues (pmid, study, research, etc.)."""
         combined = f"{(caption or '').strip()} {(transcript or '').strip()}".strip()
         lower = combined.lower()
         if any(p in lower for p in TRIVIAL_PHRASES) and len(combined) < 150:
             return True
-        if not any(term in lower for term in SUBSTANCE_TERMS):
+        if not any(term in lower for term in EVIDENCE_TERMS):
             return True
         return False
+
+    def _is_scientific_post_content(
+        self, caption: str, transcript: str | None
+    ) -> bool:
+        """
+        LLM classifier: does the post contain scientific reasoning/conclusion?
+        Excludes: event coverage, race results, congratulations, lifestyle fluff.
+        """
+        combined = f"{(caption or '').strip()} {(transcript or '').strip()}".strip()
+        if not combined or self._is_trivial_raw_post(caption, transcript):
+            return False
+        if not self._openai_api_key:
+            return not self._is_trivial_raw_post(caption, transcript)
+
+        prompt = (
+            "Определи: содержит ли этот пост/Reels научное заключение, "
+            "рассуждение или обсуждение исследований? "
+            "Включить: разбор механизмов, данных, цитаты, ссылки на литературу. "
+            "Исключить: отчёты о соревнованиях, результаты забегов, поздравления, "
+            "личные обновления, «с началом весны», атлет катается на велосипеде без анализа, "
+            "мотивационный контент без научной основы. "
+            "Ответь JSON: {\"scientific\": true|false}."
+        )
+        payload = {
+            "model": self._openai_model,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": combined[:4000]},
+            ],
+            "temperature": 0,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._openai_api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                r = client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                r.raise_for_status()
+                content = r.json()["choices"][0]["message"]["content"]
+                parsed = json.loads(content)
+                return bool(parsed.get("scientific"))
+        except Exception:
+            return not self._is_trivial_raw_post(caption, transcript)
 
     def _is_non_research_post(self, post: dict) -> bool:
         """Skip ads, sponsored posts, pure marketing."""
@@ -422,12 +471,12 @@ class EvidencePipeline:
                 entry["first_infographic_url"] = first_infographic_url
 
         pmids = sorted(set(pmids_from_text + pmids_from_transcript + pmids_from_images))
-        # PMID только из картинки при тривиальной подписи — вероятный false positive Vision
+        # PMID только из картинки — проверяем, что контент научный (иначе false positive Vision)
         if (
             pmids
             and not pmids_from_text
             and not pmids_from_transcript
-            and self._is_trivial_raw_post(caption, transcript)
+            and not self._is_scientific_post_content(caption, transcript)
         ):
             return None
         if not pmids:
@@ -480,7 +529,7 @@ class EvidencePipeline:
         )
         raw_content = bool(caption or has_media or transcript)
         if not pmids:
-            if raw_content and not self._is_trivial_raw_post(caption, transcript):
+            if raw_content and self._is_scientific_post_content(caption, transcript):
                 tags_raw = self._build_tags(topic=topic, caption=caption)
                 summary_raw = self._build_summary(
                     post=post, caption=caption, transcript=transcript
