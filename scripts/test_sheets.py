@@ -23,7 +23,7 @@ def main() -> int:
     print("=== Проверка Google Sheets ===\n")
 
     spreadsheet_id = _get_env("GOOGLE_SHEETS_SPREADSHEET_ID")
-    worksheet_name = _get_env("GOOGLE_SHEETS_WORKSHEET", "Sheet1")
+    worksheet_name = _get_env("GOOGLE_SHEETS_WORKSHEET", "Лист1")
     credentials_path = _get_env("GOOGLE_SHEETS_CREDENTIALS_PATH") or None
     credentials_json = _get_env("GOOGLE_SHEETS_CREDENTIALS_JSON")
 

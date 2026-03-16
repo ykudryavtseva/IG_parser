@@ -101,7 +101,7 @@ def main() -> int:
 
             credentials_path = _get_env("GOOGLE_SHEETS_CREDENTIALS_PATH") or None
             credentials_json = _get_env("GOOGLE_SHEETS_CREDENTIALS_JSON") or None
-            worksheet_name = _get_env("GOOGLE_SHEETS_WORKSHEET", "Sheet1")
+            worksheet_name = _get_env("GOOGLE_SHEETS_WORKSHEET", "Лист1")
             try:
                 exporter = GoogleSheetsExporter(
                     spreadsheet_id=spreadsheet_id,
