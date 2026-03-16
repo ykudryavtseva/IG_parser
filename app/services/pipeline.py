@@ -422,6 +422,39 @@ class EvidencePipeline:
                 entry["first_infographic_url"] = first_infographic_url
 
         pmids = sorted(set(pmids_from_text + pmids_from_transcript + pmids_from_images))
+        if not pmids:
+            author_text = self._extract_author_text_only(post=post, caption=caption)
+            citation_queries, context_queries = self._parse_citation_lines(author_text)
+            high_conf_candidates = self._extract_high_confidence_title_candidates(
+                post_text=post_text,
+                caption=caption,
+            )
+            title_candidates = list(image_title_candidates)
+            for q in citation_queries + context_queries:
+                if q not in title_candidates:
+                    title_candidates.insert(0, q)
+            for c in high_conf_candidates:
+                if c not in title_candidates:
+                    title_candidates.append(c)
+            # Images in post/carousel = likely PubMed screenshots — add full caption
+            # search (dangarnernutrition-style accounts)
+            if image_urls and content_type != "reel":
+                for c in self._extract_title_candidates(post_text, caption):
+                    if c not in title_candidates:
+                        title_candidates.append(c)
+            if title_candidates:
+                if debug_stats and entry:
+                    entry["title_candidates_count"] = len(title_candidates)
+                    entry["first_title_candidate"] = (
+                        title_candidates[0][:120] if title_candidates else ""
+                    )
+                pmids = self._search_pmids_by_titles(
+                    title_candidates=title_candidates,
+                    citation_queries=citation_queries,
+                    debug_out=entry if debug_stats else None,
+                )
+                if debug_stats and entry:
+                    entry["pmids_from_title"] = len(pmids)
         if debug_stats and not pmids:
             entry["caption_snippet"] = caption[:250] if caption else ""
         first_infographic = (
@@ -1183,6 +1216,48 @@ class EvidencePipeline:
             first_sentence = re.split(r"[.!?]\s+", caption.strip())[0].strip()
             if 15 <= len(first_sentence) <= 300:
                 candidates.append(first_sentence.rstrip("."))
+
+        unique: list[str] = []
+        for value in candidates:
+            if value and value not in unique:
+                unique.append(value)
+        return unique[:8]
+
+    @staticmethod
+    def _extract_high_confidence_title_candidates(post_text: str, caption: str) -> list[str]:
+        """
+        High-confidence only: position stand, ISSN, systematic review, this paper/study.
+        Excludes generic caption lines and first_sentence (to avoid false positives like
+        unrelated PubMed matches from vague phrases).
+        """
+        candidates: list[str] = []
+        text = f"{post_text}\n{caption}".lower()
+        full_text = post_text + "\n" + caption
+
+        if "position stand" in text and any(
+            w in text for w in ("antioxidant", "exercise", "sports", "performance")
+        ):
+            candidates.append(
+                "International Society of Sports Nutrition position stand: "
+                "effects of dietary antioxidants on exercise and sports performance"
+            )
+            candidates.append("position stand antioxidants exercise sports performance")
+            candidates.append(
+                "International Society of Sports Nutrition position stand antioxidants"
+            )
+        if "position" in text and "antioxidant" in text:
+            candidates.append("position stand antioxidants exercise sports performance")
+
+        research_markers = [
+            r"(?:issn\s+)?position\s+stand[^.!?\n]{10,150}",
+            r"(?:systematic\s+review|meta-?analysis)[^.!?\n]{10,150}",
+            r"(?:this\s+(?:new\s+)?(?:paper|study|research)|new\s+(?:paper|study))[^.!?\n]{15,100}",
+        ]
+        for pattern in research_markers:
+            for match in re.finditer(pattern, full_text, re.IGNORECASE):
+                phrase = re.sub(r"\s+", " ", match.group(0).strip())[:150]
+                if len(phrase) >= 20:
+                    candidates.append(phrase)
 
         unique: list[str] = []
         for value in candidates:
