@@ -9,6 +9,7 @@ from googleapiclient.discovery import build
 from app.models import PostEvidence, ResearchItem
 
 SHEETS_SCOPE = ["https://www.googleapis.com/auth/spreadsheets"]
+MAX_CELL_LEN = 40_000  # Google Sheets ~50k limit per cell
 
 
 class GoogleSheetsExporter:
@@ -187,6 +188,12 @@ class GoogleSheetsExporter:
             pass
         return None
 
+    @staticmethod
+    def _cell(val: str, max_len: int = 40000) -> str:
+        """Truncate cell value to avoid Sheets API limits (~50k chars/cell)."""
+        s = val or ""
+        return s[:max_len] + ("…" if len(s) > max_len else "")
+
     def _build_rows(self, items: list[PostEvidence]) -> list[list[str]]:
         header = [
             "Название поста",
@@ -213,15 +220,15 @@ class GoogleSheetsExporter:
 
         for item in items:
             post_block = [
-                item.topic,
+                self._cell(item.topic),
                 item.author_username or "",
                 item.published_at or "",
                 item.post_url or "",
                 item.content_type or "",
-                item.caption or "",
+                self._cell(item.caption or ""),
                 item.image_url or "",
-                item.transcript or "",
-                item.summary,
+                self._cell(item.transcript or ""),
+                self._cell(item.summary),
             ]
 
             if not item.studies:
@@ -230,10 +237,10 @@ class GoogleSheetsExporter:
 
             for idx, study in enumerate(item.studies):
                 study_data = [
-                    study.title,
+                    self._cell(study.title),
                     self._primary_author(study=study),
                     str(study.year) if study.year is not None else "",
-                    study.pmid_url,
+                    study.pmid_url or "",
                     study.full_text_url or "",
                     self._study_tag(item=item, study=study),
                     study.citation_source or "",

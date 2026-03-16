@@ -73,72 +73,6 @@ def _build_pipeline():
     return pipeline
 
 
-def _run_sheets_test() -> None:
-    """Run test write to Google Sheets and show result or error."""
-    spreadsheet_id = _get_secret("GOOGLE_SHEETS_SPREADSHEET_ID")
-    worksheet_name = _get_secret("GOOGLE_SHEETS_WORKSHEET", "Лист1")
-    credentials_path = _get_secret("GOOGLE_SHEETS_CREDENTIALS_PATH") or None
-    credentials_json = _get_secret("GOOGLE_SHEETS_CREDENTIALS_JSON")
-
-    if not spreadsheet_id or (not credentials_path and not credentials_json):
-        st.error("GOOGLE_SHEETS_SPREADSHEET_ID и credentials не заданы.")
-        return
-
-    with st.spinner("Проверка подключения…"):
-        try:
-            from app.models import PostEvidence, ResearchItem
-            from app.services.sheets_service import GoogleSheetsExporter
-
-            exporter = GoogleSheetsExporter(
-                spreadsheet_id=spreadsheet_id,
-                worksheet_name=worksheet_name,
-                credentials_path=credentials_path,
-                credentials_json=credentials_json,
-                openai_api_key=None,
-                openai_model="gpt-4o-mini",
-            )
-            resolved, fallback = exporter.get_worksheet_info()
-            if fallback:
-                st.warning(f"Лист «{worksheet_name}» не найден, используется «{resolved}»")
-            else:
-                st.success(f"Подключение к листу «{resolved}» OK")
-
-            test_item = PostEvidence(
-                topic="[ТЕСТ] Проверка подключения",
-                summary="Удалите эту строку — тест записи.",
-                tags=[],
-                studies=[
-                    ResearchItem(
-                        title="Test",
-                        authors=[],
-                        year=None,
-                        pmid="0",
-                        pmid_url="",
-                        full_text_url=None,
-                        abstract=None,
-                        tags=[],
-                        citation_source="test",
-                    )
-                ],
-                post_url=None,
-                author_username="test",
-                published_at="",
-                content_type="",
-                caption="",
-                image_url="",
-                transcript="",
-            )
-            count = exporter.export(items=[test_item])
-            st.success(f"Запись выполнена: добавлено {count} строк(и). Удалите тестовую строку в таблице.")
-        except Exception as exc:
-            st.error(f"Ошибка: {exc}")
-            if "403" in str(exc) or "permission" in str(exc).lower():
-                st.info(
-                    "Поделитесь таблицей с email сервисного аккаунта "
-                    "(client_email из GOOGLE_SHEETS_CREDENTIALS_JSON) с правами «Редактор»."
-                )
-
-
 def _export_to_sheets_if_configured(
     items: list,
 ) -> tuple[int, int | None, str, bool, list[list[str]]]:
@@ -178,64 +112,6 @@ def _export_to_sheets_if_configured(
                 "(client_email в GOOGLE_SHEETS_CREDENTIALS_JSON) с правами «Редактор»."
             )
         return 0, None, "", False, []
-
-
-def _run_sheets_test() -> None:
-    """Run test write to Google Sheets and show result or error."""
-    from app.models import PostEvidence, ResearchItem
-
-    spreadsheet_id = _get_secret("GOOGLE_SHEETS_SPREADSHEET_ID")
-    credentials_json = _get_secret("GOOGLE_SHEETS_CREDENTIALS_JSON")
-    credentials_path = _get_secret("GOOGLE_SHEETS_CREDENTIALS_PATH") or None
-    if not spreadsheet_id or (not credentials_path and not credentials_json):
-        st.error("Не заданы GOOGLE_SHEETS_SPREADSHEET_ID или credentials.")
-        return
-    with st.spinner("Проверка записи в Google Sheets…"):
-        try:
-            appended, gid, resolved, fallback, _ = _export_to_sheets_if_configured(
-                items=[
-                    PostEvidence(
-                        topic="[ТЕСТ] Проверка подключения",
-                        summary="Удалите эту строку.",
-                        tags=[],
-                        studies=[
-                            ResearchItem(
-                                title="Test",
-                                authors=[],
-                                year=None,
-                                pmid="0",
-                                pmid_url="",
-                                full_text_url=None,
-                                abstract=None,
-                                tags=[],
-                                citation_source="test",
-                            )
-                        ],
-                        post_url=None,
-                        author_username="test",
-                        published_at="",
-                        content_type="",
-                        caption="",
-                        image_url="",
-                        transcript="",
-                    )
-                ]
-            )
-            if appended > 0:
-                st.success(f"✓ Запись выполнена: {appended} строк(и) в лист «{resolved}».")
-                if gid is not None:
-                    st.markdown(
-                        f"[Открыть таблицу](https://docs.google.com/spreadsheets/d/{spreadsheet_id}#gid={gid})"
-                    )
-            else:
-                st.warning("Запись вернула 0 строк. Проверьте конфигурацию.")
-        except Exception as exc:
-            st.error(f"Ошибка: {exc}")
-            if "403" in str(exc) or "permission" in str(exc).lower():
-                st.info(
-                    "Поделитесь таблицей с email сервисного аккаунта "
-                    "(client_email в JSON) с правами «Редактор»."
-                )
 
 
 def main() -> None:
@@ -302,9 +178,6 @@ def _render_parser_tab() -> None:
         + (f": [открыть]({sheets_link})" if sheets_link else ".")
         + "."
     )
-
-    if spreadsheet_id and st.button("Проверить Google Sheets"):
-        _run_sheets_test()
 
     if "last_run_results" not in st.session_state:
         st.session_state.last_run_results = []
