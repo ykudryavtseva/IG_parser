@@ -36,7 +36,7 @@ from app.services.relevance_service import StudyRelevanceChecker
 from app.services.transcription_service import TranscriptionProvider
 
 MAX_IMAGE_URLS_TO_SCAN = 8
-POST_PROCESS_WORKERS = 12
+POST_PROCESS_WORKERS = 6  # fewer workers to avoid NCBI rate-limit / hangs
 
 # Приоритет извлечения: 1) картинка (скриншот PubMed с title/PMID)
 # 2) текст (PMID, ссылки) 3) поиск по названию из текста (вольный пересказ блогера)
@@ -511,7 +511,7 @@ class EvidencePipeline:
 
         studies: list = []
         fetch_failed = 0
-        for pmid in ordered_pmids[:25]:
+        for pmid in ordered_pmids[:12]:
             try:
                 study = self._pubmed_client.fetch_study(pmid)
                 study = study.model_copy(

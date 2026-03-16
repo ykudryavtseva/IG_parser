@@ -12,7 +12,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 load_dotenv()
 
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.5.3"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
@@ -156,8 +156,13 @@ def main() -> None:
         + "."
     )
 
-    results = []
-    appended_rows = 0
+    if "last_run_results" not in st.session_state:
+        st.session_state.last_run_results = []
+    if "last_run_appended_rows" not in st.session_state:
+        st.session_state.last_run_appended_rows = 0
+
+    results = st.session_state.last_run_results
+    appended_rows = st.session_state.last_run_appended_rows
     if st.button(
         "Выгрузить новые посты сейчас", type="primary", use_container_width=True
     ):
@@ -186,7 +191,7 @@ def main() -> None:
                 run_result = pipeline.run(
                     topic="",
                     sources=sources,
-                    max_items=20,
+                    max_items=15,
                     discovery_limit=1,
                     skip_relevance=True,
                     latest_posts_mode=True,
@@ -267,6 +272,7 @@ def main() -> None:
             st.write(f"✓ Найдено записей: {len(run_result.items)}")
 
             results = run_result.items
+            st.session_state.last_run_results = results
             if not results:
                 status.update(label="Готово", state="complete")
                 if run_result.posts_with_caption == 0 and run_result.posts_fetched > 0:
@@ -312,6 +318,19 @@ def main() -> None:
                 st.write("**2. Выгрузка в Google Sheets**")
                 appended_rows = _export_to_sheets_if_configured(items=results)
                 st.write(f"✓ Добавлено строк: {appended_rows}")
+                if appended_rows == 0 and any(item.studies for item in results):
+                    st.warning(
+                        "В таблицу добавлено 0 строк при наличии исследований. "
+                        "Проверьте GOOGLE_SHEETS_CREDENTIALS_JSON и имя листа "
+                        "(GOOGLE_SHEETS_WORKSHEET)."
+                    )
+            else:
+                if results:
+                    st.warning(
+                        "**Google Sheets не настроен.** GOOGLE_SHEETS_SPREADSHEET_ID или "
+                        "GOOGLE_SHEETS_CREDENTIALS_JSON не заданы. Результаты не попали в таблицу."
+                    )
+            st.session_state.last_run_appended_rows = appended_rows
 
             if results:
                 new_ids = [item.post_url for item in results if item.post_url]
