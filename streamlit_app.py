@@ -368,17 +368,17 @@ def _render_parser_tab() -> None:
             if has_sheets:
                 worksheet_name = _get_secret("GOOGLE_SHEETS_WORKSHEET", "Лист1")
                 st.write("**2. Выгрузка в Google Sheets**")
-        (
-            appended_rows,
-            sheet_gid,
-            resolved_sheet,
-            used_fallback,
-            export_rows,
-        ) = _export_to_sheets_if_configured(
-            items=results,
-            worksheet_name=_get_secret("GOOGLE_SHEETS_WORKSHEET", "Лист1"),
-            source="instagram",
-        )
+                (
+                    appended_rows,
+                    sheet_gid,
+                    resolved_sheet,
+                    used_fallback,
+                    export_rows,
+                ) = _export_to_sheets_if_configured(
+                    items=results,
+                    worksheet_name=_get_secret("GOOGLE_SHEETS_WORKSHEET", "Лист1"),
+                    source="instagram",
+                )
                 st.session_state.last_run_sheet_gid = sheet_gid
                 st.session_state.last_run_resolved_sheet = resolved_sheet
                 st.write(
