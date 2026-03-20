@@ -48,6 +48,7 @@ nano ~/IG_parser/.env
 APIFY_TOKEN=ваш_токен
 APIFY_ACTOR_ID=apify/instagram-post-scraper
 APIFY_SEARCH_ACTOR_ID=apify/instagram-search-scraper
+APIFY_TWITTER_ACTOR_ID=apidojo/twitter-scraper-lite
 NCBI_EMAIL=ваш_email
 NCBI_TOOL=ig-parser-mvp
 OPENAI_API_KEY=ваш_ключ_openai
@@ -92,18 +93,21 @@ sudo ufw status
 
 ## 10. Авто-синхронизация (cron, 8:00 МСК)
 
-Посты из аккаунтов автоматически выгружаются в Google Sheets раз в сутки. Сначала сохраните аккаунты через Streamlit (кнопка «Сохранить аккаунты для мониторинга»).
+Посты из аккаунтов автоматически выгружаются в Google Sheets раз в сутки. Сохраните аккаунты через Streamlit:
+- Instagram: «Сохранить аккаунты для мониторинга»
+- Twitter: «Сохранить аккаунты Twitter для автосинхронизации»
 
-Добавить задание в crontab:
+Два отдельных запуска в 8:00 МСК (5:00 UTC):
 
 ```bash
 crontab -e
 ```
 
-Строка (8:00 МСК = 5:00 UTC):
+Строки:
 
 ```
 0 5 * * * cd /root/IG_parser && /root/.local/bin/poetry run python scripts/sync_worker.py >> /root/IG_parser/logs/sync.log 2>&1
+0 5 * * * cd /root/IG_parser && /root/.local/bin/poetry run python scripts/sync_worker_twitter.py >> /root/IG_parser/logs/sync_twitter.log 2>&1
 ```
 
 Создать папку для логов:

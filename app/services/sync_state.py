@@ -17,6 +17,9 @@ def _default_state() -> dict:
         "last_run_at": None,
         "accounts": [],
         "processed_post_ids": [],
+        "twitter_accounts": [],
+        "last_twitter_run_at": None,
+        "processed_twitter_ids": [],
     }
 
 
@@ -37,6 +40,13 @@ def load_state(path: Path | None = None) -> dict:
         out["processed_post_ids"] = list(data.get("processed_post_ids", []) or [])[
             -MAX_PROCESSED_IDS:
         ]
+        out["twitter_accounts"] = list(
+            data.get("twitter_accounts", [])
+        ) if data.get("twitter_accounts") else []
+        out["last_twitter_run_at"] = data.get("last_twitter_run_at")
+        out["processed_twitter_ids"] = list(
+            data.get("processed_twitter_ids", []) or []
+        )[-MAX_PROCESSED_IDS:]
         return out
     except (json.JSONDecodeError, OSError):
         return _default_state()
@@ -56,6 +66,11 @@ def save_state(
         "last_run_at": state.get("last_run_at"),
         "accounts": state.get("accounts", []),
         "processed_post_ids": state.get("processed_post_ids", [])[-MAX_PROCESSED_IDS:],
+        "twitter_accounts": state.get("twitter_accounts", []),
+        "last_twitter_run_at": state.get("last_twitter_run_at"),
+        "processed_twitter_ids": state.get("processed_twitter_ids", [])[
+            -MAX_PROCESSED_IDS:
+        ],
     }
     filepath.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -92,4 +107,38 @@ def mark_run_complete(
         if pid and pid not in seen:
             seen.add(pid)
     state["processed_post_ids"] = list(seen)[-MAX_PROCESSED_IDS:]
+    save_state(state, path)
+
+
+def get_only_twitter_newer_than(state: dict) -> str | None:
+    """Return start date for Twitter based on last_twitter_run_at. ISO format for Apify."""
+    last = state.get("last_twitter_run_at")
+    if not last:
+        from datetime import timedelta
+
+        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        return week_ago.strftime("%Y-%m-%d")
+    try:
+        dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        from datetime import timedelta
+
+        day_ago = datetime.now(timezone.utc) - timedelta(days=1)
+        return day_ago.strftime("%Y-%m-%d")
+
+
+def mark_twitter_run_complete(
+    state: dict,
+    new_tweet_ids: list[str],
+    path: Path | None = None,
+) -> None:
+    """Обновить last_twitter_run_at и добавить обработанные tweet url/id."""
+    now = datetime.now(timezone.utc).isoformat()
+    state["last_twitter_run_at"] = now
+    seen = set(state.get("processed_twitter_ids", []))
+    for tid in new_tweet_ids:
+        if tid and tid not in seen:
+            seen.add(tid)
+    state["processed_twitter_ids"] = list(seen)[-MAX_PROCESSED_IDS:]
     save_state(state, path)

@@ -21,6 +21,7 @@ class GoogleSheetsExporter:
         credentials_json: str | None = None,
         openai_api_key: str | None = None,
         openai_model: str = "gpt-4o-mini",
+        source: str = "instagram",
     ) -> None:
         if not credentials_path and not credentials_json:
             raise RuntimeError(
@@ -30,6 +31,7 @@ class GoogleSheetsExporter:
 
         self._spreadsheet_id = spreadsheet_id
         self._worksheet_name = worksheet_name
+        self._source = source
         self._openai_api_key = openai_api_key
         self._openai_model = openai_model
         self._ai_cache: dict[str, list[str]] = {}
@@ -55,7 +57,7 @@ class GoogleSheetsExporter:
 
     def export(self, items: list[PostEvidence]) -> int:
         self._prefill_ai_cache_parallel(items=items)
-        rows = self._build_rows(items=items)
+        rows = self._build_rows(items=items, source=self._source)
         self._last_exported_rows = rows
         if len(rows) == 1:
             return 0
@@ -194,25 +196,47 @@ class GoogleSheetsExporter:
         s = val or ""
         return s[:max_len] + ("…" if len(s) > max_len else "")
 
-    def _build_rows(self, items: list[PostEvidence]) -> list[list[str]]:
-        header = [
-            "Название поста",
-            "Инстаграм",
-            "Дата публикации",
-            "Ссылка на пост в инстаграм",
-            "Тип контента",
-            "Описание",
-            "Картинка",
-            "Транскрипт",
-            "Саммари",
-            "Название исследования",
-            "Автор",
-            "Год исследования",
-            "Ссылка на исследование PMID",
-            "Ссылка на полный текст исследования",
-            "Тег по смыслу исследования",
-            "Источник цитаты",
-        ]
+    def _build_rows(
+        self, items: list[PostEvidence], source: str = "instagram"
+    ) -> list[list[str]]:
+        if source == "twitter":
+            header = [
+                "Название поста",
+                "Twitter",
+                "Дата публикации",
+                "Ссылка на пост",
+                "Тип контента",
+                "Текст",
+                "Картинка",
+                "Транскрипт",
+                "Саммари",
+                "Название исследования",
+                "Автор",
+                "Год исследования",
+                "Ссылка на PMID",
+                "Ссылка на полный текст",
+                "Тег по смыслу",
+                "Источник цитаты",
+            ]
+        else:
+            header = [
+                "Название поста",
+                "Инстаграм",
+                "Дата публикации",
+                "Ссылка на пост в инстаграм",
+                "Тип контента",
+                "Описание",
+                "Картинка",
+                "Транскрипт",
+                "Саммари",
+                "Название исследования",
+                "Автор",
+                "Год исследования",
+                "Ссылка на исследование PMID",
+                "Ссылка на полный текст исследования",
+                "Тег по смыслу исследования",
+                "Источник цитаты",
+            ]
         rows: list[list[str]] = [header]
         post_cols_count = 9
         study_cols_count = 7

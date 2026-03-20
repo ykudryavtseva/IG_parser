@@ -12,7 +12,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 load_dotenv()
 
-APP_VERSION = "0.5.9"
+APP_VERSION = "0.6.0"
 DEFAULT_SOURCES = ["dangarnernutrition"]
 
 
@@ -75,6 +75,8 @@ def _build_pipeline():
 
 def _export_to_sheets_if_configured(
     items: list,
+    worksheet_name: str = "Лист1",
+    source: str = "instagram",
 ) -> tuple[int, int | None, str, bool, list[list[str]]]:
     """Export to Sheets. Returns (rows_added, sheet_gid, resolved_worksheet, fallback_used, rows)."""
     spreadsheet_id = _get_secret("GOOGLE_SHEETS_SPREADSHEET_ID")
@@ -83,7 +85,6 @@ def _export_to_sheets_if_configured(
 
     from app.services.sheets_service import GoogleSheetsExporter
 
-    worksheet_name = _get_secret("GOOGLE_SHEETS_WORKSHEET", "Лист1")
     credentials_path = _get_secret("GOOGLE_SHEETS_CREDENTIALS_PATH")
     credentials_json = _get_secret("GOOGLE_SHEETS_CREDENTIALS_JSON")
     openai_api_key = _get_secret("OPENAI_API_KEY")
@@ -97,6 +98,7 @@ def _export_to_sheets_if_configured(
             credentials_json=credentials_json or None,
             openai_api_key=openai_api_key,
             openai_model=openai_model,
+            source=source,
         )
         count = exporter.export(items=items)
         gid = exporter.get_sheet_gid()
@@ -123,10 +125,13 @@ def main() -> None:
     st.title("🔬 IG Parser — Instagram → PubMed")
     st.caption(f"Версия {APP_VERSION}")
 
-    tab_parser, tab_table = st.tabs(["Парсер", "Таблица"])
+    tab_parser, tab_twitter, tab_table = st.tabs(["Парсер Instagram", "Парсер Twitter", "Таблица"])
 
     with tab_parser:
         _render_parser_tab()
+
+    with tab_twitter:
+        _render_twitter_tab()
 
     with tab_table:
         _render_table_tab()
@@ -363,13 +368,17 @@ def _render_parser_tab() -> None:
             if has_sheets:
                 worksheet_name = _get_secret("GOOGLE_SHEETS_WORKSHEET", "Лист1")
                 st.write("**2. Выгрузка в Google Sheets**")
-                (
-                    appended_rows,
-                    sheet_gid,
-                    resolved_sheet,
-                    used_fallback,
-                    export_rows,
-                ) = _export_to_sheets_if_configured(items=results)
+        (
+            appended_rows,
+            sheet_gid,
+            resolved_sheet,
+            used_fallback,
+            export_rows,
+        ) = _export_to_sheets_if_configured(
+            items=results,
+            worksheet_name=_get_secret("GOOGLE_SHEETS_WORKSHEET", "Лист1"),
+            source="instagram",
+        )
                 st.session_state.last_run_sheet_gid = sheet_gid
                 st.session_state.last_run_resolved_sheet = resolved_sheet
                 st.write(
@@ -471,32 +480,276 @@ def _render_parser_tab() -> None:
         )
 
 
+def _build_twitter_pipeline():
+    """Build Twitter pipeline from env/secrets."""
+    apify_token = _get_secret("APIFY_TOKEN")
+    if not apify_token:
+        st.error("APIFY_TOKEN не задан.")
+        return None
+
+    from app.services.pubmed_service import PubMedClient
+    from app.services.relevance_service import StudyRelevanceChecker
+    from app.services.twitter_apify_client import ApifyTwitterClient
+    from app.services.twitter_pipeline import TwitterPipeline
+
+    twitter_actor_id = _get_secret(
+        "APIFY_TWITTER_ACTOR_ID", "apidojo/twitter-scraper-lite"
+    )
+    ncbi_tool = _get_secret("NCBI_TOOL", "ig-parser-mvp")
+    ncbi_email = _get_secret("NCBI_EMAIL")
+    openai_api_key = _get_secret("OPENAI_API_KEY")
+    openai_model = _get_secret("OPENAI_MODEL", "gpt-4o-mini")
+
+    twitter_client = ApifyTwitterClient(
+        token=apify_token,
+        actor_id=twitter_actor_id,
+    )
+    pubmed_client = PubMedClient(tool=ncbi_tool, email=ncbi_email)
+    relevance_checker = StudyRelevanceChecker(
+        openai_api_key=openai_api_key,
+        openai_model=openai_model,
+    )
+    return TwitterPipeline(
+        twitter_client=twitter_client,
+        pubmed_client=pubmed_client,
+        relevance_checker=relevance_checker,
+        openai_api_key=openai_api_key,
+        openai_model=openai_model,
+    )
+
+
+def _render_twitter_tab() -> None:
+    from app.services.sync_state import (
+        load_state,
+        mark_twitter_run_complete,
+        save_state,
+    )
+
+    sync_state = load_state()
+    saved_twitter = sync_state.get("twitter_accounts") or []
+    default_handles = ", ".join(saved_twitter) if saved_twitter else ""
+
+    handles_input = st.text_input(
+        "Аккаунты Twitter (через запятую)",
+        value=default_handles,
+        placeholder="NASA, elonmusk",
+        help="Twitter handle без @. Для автосинхронизации — сохраните после ввода.",
+    )
+
+    col_save, _ = st.columns([1, 3])
+    with col_save:
+        if st.button("Сохранить аккаунты Twitter для автосинхронизации"):
+            accounts = [h.strip().lstrip("@") for h in handles_input.split(",") if h.strip()]
+            if accounts:
+                sync_state["twitter_accounts"] = accounts
+                save_state(sync_state)
+                st.success(
+                    f"Сохранено: {len(accounts)} аккаунт(ов). "
+                    "Автосинхронизация (cron 8:00 МСК) будет использовать этот список."
+                )
+            else:
+                st.warning("Укажите хотя бы один аккаунт.")
+
+    spreadsheet_id = _get_secret("GOOGLE_SHEETS_SPREADSHEET_ID")
+    sheets_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}" if spreadsheet_id else ""
+    st.markdown(
+        "Автоматическая выгрузка Twitter — ежедневно в 8:00 МСК. "
+        "Данные: Лист 2 в таблице"
+        + (f" [открыть]({sheets_link})" if sheets_link else "")
+        + ", локально: `output/twitter_table.csv`."
+    )
+
+    if "last_twitter_results" not in st.session_state:
+        st.session_state.last_twitter_results = []
+    if "last_twitter_appended_rows" not in st.session_state:
+        st.session_state.last_twitter_appended_rows = 0
+
+    light_filter = st.checkbox(
+        "Лёгкая фильтрация (включить все посты с контентом)",
+        value=True,
+        key="twitter_light_filter",
+        help="Включено — все твиты/треды с текстом. Выключено — только с научным обоснованием.",
+    )
+
+    results = st.session_state.last_twitter_results
+    appended_rows = st.session_state.last_twitter_appended_rows
+
+    if st.button("Выгрузить из Twitter", type="primary", use_container_width=True):
+        if not handles_input or not handles_input.strip():
+            st.error("Укажите хотя бы один аккаунт Twitter.")
+            return
+
+        pipeline = _build_twitter_pipeline()
+        if not pipeline:
+            return
+
+        handles = [h.strip().lstrip("@") for h in handles_input.split(",") if h.strip()]
+        processed = set(sync_state.get("processed_twitter_ids") or [])
+        has_sheets = bool(_get_secret("GOOGLE_SHEETS_SPREADSHEET_ID"))
+
+        with st.status("Обработка Twitter…", expanded=True) as status:
+            try:
+                run_result = pipeline.run(
+                    handles=handles,
+                    max_items=50,
+                    only_newer_than=None,
+                    processed_tweet_ids=processed,
+                    skip_scientific_filter=light_filter,
+                )
+            except Exception as exc:
+                st.exception(exc)
+                return
+
+            st.write(
+                f"Получено твитов: {run_result.posts_fetched}, "
+                f"с текстом: {run_result.posts_with_caption}"
+            )
+            if run_result.debug_apify_error:
+                st.warning(f"Apify: {run_result.debug_apify_error}")
+            st.write(f"✓ Найдено записей: {len(run_result.items)}")
+
+            results = run_result.items
+            st.session_state.last_twitter_results = results
+
+            if not results:
+                status.update(label="Готово", state="complete")
+                if run_result.posts_fetched == 0:
+                    st.info(
+                        "Твитов не получено. Проверьте handle и APIFY_TOKEN."
+                    )
+                else:
+                    st.info(
+                        "В твитах не обнаружено исследований. "
+                        "Включите «Лёгкую фильтрацию» для выгрузки всех постов."
+                    )
+                return
+
+            rows_for_local: list[list[str]] = []
+
+            if has_sheets:
+                st.write("**Выгрузка в Google Sheets (Лист 2)**")
+                (
+                    appended_rows,
+                    sheet_gid,
+                    resolved_sheet,
+                    used_fallback,
+                    export_rows,
+                ) = _export_to_sheets_if_configured(
+                    items=results,
+                    worksheet_name="Лист2",
+                    source="twitter",
+                )
+                st.write(f"✓ Добавлено строк: {appended_rows} (лист «{resolved_sheet}»)")
+                if export_rows and len(export_rows) > 1:
+                    rows_for_local = export_rows[1:]
+            else:
+                if results:
+                    st.error(
+                        "GOOGLE_SHEETS_SPREADSHEET_ID не задан. "
+                        "Данные сохраняются в локальную таблицу."
+                    )
+
+            if not rows_for_local and results:
+                from app.services.table_storage import build_twitter_rows_from_items
+
+                rows_for_local = build_twitter_rows_from_items(results)
+
+            if rows_for_local:
+                from app.services.table_storage import append_twitter_rows_to_csv
+
+                n = append_twitter_rows_to_csv(rows_for_local)
+                st.write(f"✓ Добавлено в twitter_table.csv: {n} строк")
+
+            st.session_state.last_twitter_appended_rows = appended_rows
+            new_ids = [item.post_url for item in results if item.post_url]
+            mark_twitter_run_complete(sync_state, new_ids)
+            status.update(label="Готово", state="complete")
+
+        if has_sheets and appended_rows > 0 and spreadsheet_id:
+            st.markdown(
+                f"📊 **Google Sheets:** [открыть таблицу]({sheets_link})"
+            )
+
+    for item in results:
+        label = f"📌 {item.author_username or '—'} | {len(item.studies)} исследований"
+        with st.expander(label):
+            st.markdown(f"**Тема:** {item.topic}")
+            if item.post_url:
+                st.markdown(f"[Ссылка на твит]({item.post_url})")
+            summary = (
+                f"{item.summary[:500]}…" if len(item.summary) > 500 else item.summary
+            )
+            st.markdown(f"**Кратко:** {summary}")
+            st.markdown(f"**Теги:** {', '.join(item.tags) or '—'}")
+            for study in item.studies:
+                link = f"- [{study.title}]({study.pmid_url}) — PMID:{study.pmid}"
+                st.markdown(link)
+
+    output_dir = Path("output")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_file = output_dir / "streamlit_twitter_result.json"
+    payload = [r.model_dump(mode="json") for r in results]
+    out_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+    if results:
+        st.download_button(
+            "Скачать JSON",
+            out_file.read_text(encoding="utf-8"),
+            file_name="twitter_parser_result.json",
+            mime="application/json",
+            use_container_width=True,
+            key="twitter_download",
+        )
+
+
 def _render_table_tab() -> None:
-    """Render editable local table tab."""
+    """Render editable local tables — Instagram и Twitter."""
     from app.services.table_storage import (
         DELETE_COL,
         load_table_csv,
+        load_twitter_table_csv,
         save_table_csv,
+        save_twitter_table_csv,
     )
 
-    st.markdown(
-        "Локальная таблица — данные сохраняются в файл `output/research_table.csv`. "
-        "Редактируйте ячейки и отмечайте строки для удаления в колонке «Удалить»."
-    )
-    df = load_table_csv()
-    if df.empty or (len(df.columns) == 1 and DELETE_COL in df.columns):
-        st.info("Таблица пуста. Запустите выгрузку на вкладке «Парсер».")
-        return
+    sub_ig, sub_tw = st.tabs(["Instagram (research_table.csv)", "Twitter (twitter_table.csv)"])
 
-    edited = st.data_editor(
-        df,
-        use_container_width=True,
-        column_config={DELETE_COL: st.column_config.CheckboxColumn("Удалить")},
-    )
-    if st.button("Сохранить изменения"):
-        save_table_csv(edited)
-        st.success("Изменения сохранены.")
-        st.rerun()
+    with sub_ig:
+        st.markdown(
+            "Локальная таблица Instagram. Редактируйте ячейки, "
+            "отмечайте строки для удаления в колонке «Удалить»."
+        )
+        df = load_table_csv()
+        if df.empty or (len(df.columns) == 1 and DELETE_COL in df.columns):
+            st.info("Таблица пуста. Запустите выгрузку на вкладке «Парсер Instagram».")
+        else:
+            edited = st.data_editor(
+                df,
+                use_container_width=True,
+                column_config={DELETE_COL: st.column_config.CheckboxColumn("Удалить")},
+            )
+            if st.button("Сохранить изменения (Instagram)", key="save_ig"):
+                save_table_csv(edited)
+                st.success("Изменения сохранены.")
+                st.rerun()
+
+    with sub_tw:
+        st.markdown(
+            "Локальная таблица Twitter. Редактируйте ячейки, "
+            "отмечайте строки для удаления в колонке «Удалить»."
+        )
+        df_tw = load_twitter_table_csv()
+        if df_tw.empty or (len(df_tw.columns) == 1 and DELETE_COL in df_tw.columns):
+            st.info("Таблица пуста. Запустите выгрузку на вкладке «Парсер Twitter».")
+        else:
+            edited_tw = st.data_editor(
+                df_tw,
+                use_container_width=True,
+                column_config={DELETE_COL: st.column_config.CheckboxColumn("Удалить")},
+            )
+            if st.button("Сохранить изменения (Twitter)", key="save_tw"):
+                save_twitter_table_csv(edited_tw)
+                st.success("Изменения сохранены.")
+                st.rerun()
 
 
 if __name__ == "__main__":
